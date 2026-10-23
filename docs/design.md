@@ -231,7 +231,10 @@ retention needs delete and GC).
 - **Write listener** (internal, default `:5001`): plain HTTP, no auth, used only
   by the daemon's builds. In compose it is published as `127.0.0.1:5001:5001`,
   because the **host's** dockerd performs the push and must reach it.
-  `localhost` registries are treated as insecure-OK by Docker.
+  `localhost` registries are treated as insecure-OK by Docker. Inside the
+  container the listener binds all interfaces (a loopback-only bind would be
+  unreachable through the port mapping); the loopback restriction is the
+  `127.0.0.1:` prefix of the published port, so never publish it without it.
 - Storage in `DATA_DIR/registry` (filesystem driver).
 
 ## 10. Retention and GC
