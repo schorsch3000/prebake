@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -30,8 +31,10 @@ type Spec struct {
 type Docker interface {
 	// Build builds Spec for linux/amd64 into the local image store. Output goes to log.
 	Build(ctx context.Context, s Spec, log io.Writer) error
-	// Run runs `sh -c cmd` in a throwaway container of image and returns combined output.
-	Run(ctx context.Context, image, cmd string) (string, error)
+	// Test runs `sh -c cmd` on top of image as a RUN step of a throwaway build, so no
+	// container is ever started (the daemon needs no container API access). It returns
+	// the tail of the build output; a failing command is an error.
+	Test(ctx context.Context, image, cmd string) (string, error)
 	Tag(ctx context.Context, src, dst string) error
 	Push(ctx context.Context, ref string, log io.Writer) error
 	// Pull fetches ref into the local store.
@@ -102,8 +105,32 @@ func (c *CLI) Build(ctx context.Context, s Spec, log io.Writer) error {
 	return c.run(ctx, stdin, log, log, args...)
 }
 
-func (c *CLI) Run(ctx context.Context, image, cmd string) (string, error) {
-	return c.capture(ctx, "run", "--rm", "--platform", "linux/amd64", "--entrypoint", "sh", image, "-c", cmd)
+// TestDockerfile is the throwaway Dockerfile that runs one smoke test. The command
+// goes through the JSON (exec) form so that any string, including quotes and
+// newlines, reaches `sh -c` unchanged.
+func TestDockerfile(image, cmd string) string {
+	j, _ := json.Marshal(cmd) // a string always marshals
+	return "FROM " + image + "\nRUN [\"sh\", \"-c\", " + string(j) + "]\n"
+}
+
+const testOutputTail = 4096
+
+func (c *CLI) Test(ctx context.Context, image, cmd string) (string, error) {
+	dir, err := os.MkdirTemp("", "prebake-test-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(dir)
+	tag := image + "-test"
+	var out bytes.Buffer
+	// no cache: the point is to run the command, and an unchanged image must not skip it
+	err = c.Build(ctx, Spec{Tag: tag, ContextDir: dir, Body: TestDockerfile(image, cmd), NoCache: true}, &out)
+	c.Remove(context.WithoutCancel(ctx), tag) // best effort; the image only exists to carry the result
+	text := strings.TrimSpace(out.String())
+	if len(text) > testOutputTail {
+		text = "..." + text[len(text)-testOutputTail:]
+	}
+	return text, err
 }
 
 func (c *CLI) Tag(ctx context.Context, src, dst string) error {

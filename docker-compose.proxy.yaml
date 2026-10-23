@@ -1,0 +1,44 @@
+# Optional: let the daemon reach Docker only through a filtering socket proxy
+# instead of mounting /var/run/docker.sock into it.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.proxy.yaml up -d --build
+#
+# The proxy (Tecnativa/docker-socket-proxy, HAProxy) filters by URL prefix and
+# HTTP method only. That is why prebake runs smoke tests as build steps instead
+# of `docker run`: with CONTAINERS + POST enabled anybody could start a
+# privileged container and the proxy would protect nothing. As configured here
+# the daemon can build, pull, tag, push and remove images, and nothing else.
+# Needs Docker Compose >= 2.24 (`!override`).
+services:
+  docker-proxy:
+    # pinned to v0.5.0 by digest; update deliberately
+    image: tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
+    restart: unless-stopped
+    environment:
+      POST: 1          # needed for build, tag, push, pull and image removal
+      BUILD: 1         # POST /build
+      SESSION: 1       # buildx: /session
+      GRPC: 1          # buildx: /grpc
+      IMAGES: 1        # inspect, tag, push, pull, remove
+      INFO: 1          # buildx asks /info
+      # everything else stays off, in particular CONTAINERS, EXEC, VOLUMES, NETWORKS, SECRETS, SERVICES, SWARM, SYSTEM
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-api
+
+  prebake:
+    environment:
+      DOCKER_HOST: tcp://docker-proxy:2375
+    # drop the socket mount of the base file; keep only the data volume
+    volumes: !override
+      - prebake-data:/data
+    networks:
+      - default
+      - docker-api
+    depends_on:
+      - docker-proxy
+
+networks:
+  docker-api:
+    internal: true     # only prebake and the proxy are on it; the proxy port is not published

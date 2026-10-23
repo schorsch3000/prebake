@@ -168,7 +168,9 @@ For each job:
      generated Dockerfile layered on the previous image (pulled from the
      registry if not in the local store). Without `refresh_cmd`, or without a
      previous image, the job is upgraded to a rebuild and a note is recorded.
-4. Run `tests:` commands in a throwaway container from the candidate (if any).
+4. Run `tests:` commands (if any) as `RUN` steps of a throwaway build `FROM` the
+   candidate (exec-form `sh -c`, `--no-cache`). No container is started, so the
+   daemon needs no container API access (see §15, socket proxy).
 5. Promote: tag and push the date tag `<flavor>-<YYYYmmdd-HHMMSS>` first; only
    after that succeeded, tag and push the moving alias. The alias is `latest`
    for the `default` flavor and the flavor name otherwise. The candidate is
@@ -304,10 +306,12 @@ parked/retry state. Logs go to stdout; build logs are kept per job (bounded).
 - ports: `5000:5000` (read-only registry), `127.0.0.1:5001:5001` (write),
   `8080:8080` (status).
 - env: `REPO_URL` (required), optional Pushover and TLS.
-- Docker socket access is root-equivalent on the host; see the README. A
-  `docker-socket-proxy` in front of it is not supported in v1: buildx needs
-  endpoints (session/grpc) that such proxies handle inconsistently, and it is
-  untested here.
+- Docker socket access is root-equivalent on the host. `docker-compose.proxy.yaml`
+  replaces the socket mount with Tecnativa/docker-socket-proxy (v0.5.0, pinned
+  by digest) on an internal network, allowing only `POST`, `BUILD`, `SESSION`,
+  `GRPC`, `IMAGES` and `INFO`. The proxy filters by path prefix and method, not
+  by body, so it only restricts anything if containers stay out of reach; that is
+  the reason smoke tests run as build steps (§7) rather than `docker run`.
 
 ## 16. Implementation
 

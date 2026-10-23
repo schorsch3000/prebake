@@ -81,13 +81,23 @@ jobs:
             'git --version && ssh -V && docker --version && docker buildx version'
 
   e2e:
-    name: compose end-to-end
+    name: compose end-to-end (${{ matrix.mode }})
     runs-on: ubuntu-latest
     needs: image
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: docker socket
+            proxy: ""
+          - mode: socket proxy
+            proxy: "1"
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
         run: shellcheck scripts/*.sh
       - name: run the daemon from compose against a local repo
         run: scripts/ci-e2e.sh
+        env:
+          PREBAKE_PROXY: ${{ matrix.proxy }}

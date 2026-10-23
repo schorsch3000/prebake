@@ -161,7 +161,7 @@ func (r *Runner) Run(ctx context.Context, job Job, log io.Writer) (*Result, erro
 	defer r.Docker.Remove(context.WithoutCancel(ctx), candidate)
 
 	for _, t := range job.Config.Tests {
-		out, err := r.Docker.Run(ctx, candidate, t)
+		out, err := r.Docker.Test(ctx, candidate, t)
 		if err != nil {
 			return nil, &TestError{Cmd: t, Output: out, Err: err}
 		}

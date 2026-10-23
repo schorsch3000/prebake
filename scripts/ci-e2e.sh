@@ -7,7 +7,11 @@ set -euo pipefail
 origin=${CI_ORIGIN:-/tmp/ci-origin.git}
 work=$(mktemp -d)
 export CI_ORIGIN=$origin REPO_URL=/origin.git
-compose=(docker compose -f docker-compose.yaml -f docker-compose.ci.yaml)
+# PREBAKE_PROXY=1 runs the daemon behind the filtering docker socket proxy.
+# Order matters: the proxy file overrides the base volumes, the CI file adds to them.
+compose=(docker compose -f docker-compose.yaml)
+if [ "${PREBAKE_PROXY:-}" = 1 ]; then compose+=(-f docker-compose.proxy.yaml); fi
+compose+=(-f docker-compose.ci.yaml)
 status=http://localhost:8080/status
 
 dump_logs() { "${compose[@]}" logs --no-color prebake | tail -n 150 || true; }
@@ -72,6 +76,23 @@ echo "== CLI inside the container"
 "${compose[@]}" exec -T prebake prebake status
 "${compose[@]}" exec -T prebake prebake dry-run
 curl -fsS http://localhost:8080/pubkey | grep -q '^ssh-ed25519 '
+
+if [ "${PREBAKE_PROXY:-}" = 1 ]; then
+  echo "== behind the socket proxy: images work, containers are out of reach"
+  "${compose[@]}" exec -T prebake docker version --format '{{.Server.Version}}' >/dev/null
+  if "${compose[@]}" exec -T prebake docker ps >/dev/null 2>&1; then
+    echo "the daemon can list containers through the proxy" >&2
+    exit 1
+  fi
+  if "${compose[@]}" exec -T prebake docker run --rm busybox:stable true >/dev/null 2>&1; then
+    echo "the daemon can start containers through the proxy" >&2
+    exit 1
+  fi
+  if "${compose[@]}" exec -T prebake test -S /var/run/docker.sock; then
+    echo "the docker socket is mounted into the daemon container" >&2
+    exit 1
+  fi
+fi
 
 echo "== a push adds a child container that is built after its parent via PARENT"
 mkdir -p "$work/w/containers/ci-child"

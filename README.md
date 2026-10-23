@@ -82,7 +82,7 @@ containers/
 | `keep` | per-container keep, must not exceed the global `keep` |
 | `depends_on` | parent containers; they are built first, and `ARG PARENT` receives `<registry>/<parent>:latest` (also `PARENT_<NAME>`) |
 | `flavors` | `name: {args: {K: V}}`, one image per flavor, build args from `args` |
-| `tests` | shell commands run in the candidate image (`sh -c`); any failure stops promotion |
+| `tests` | shell commands (`sh -c`) run on the candidate image as `RUN` steps of a throwaway build, so no container is started; any failure stops promotion |
 | `extra_files` | globs for files the Dockerfile does not `COPY` but that may stay in the directory |
 
 Unknown keys are errors. Stray files in a container directory (not referenced
@@ -171,9 +171,24 @@ Flags override variables; see `prebake daemon --help`.
 
 ## Security
 
-- The daemon needs the Docker socket to build, which is **root-equivalent on
-  the host**. Run it on a machine where that is acceptable. A socket proxy is
-  not supported in v1.
+- The daemon needs Docker to build. With the plain compose file that means the
+  Docker socket, which is **root-equivalent on the host**.
+- To avoid that, use the socket proxy variant:
+
+  ```sh
+  docker compose -f docker-compose.yaml -f docker-compose.proxy.yaml up -d --build
+  ```
+
+  The daemon then has no socket; it talks to
+  [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)
+  (pinned to v0.5.0 by digest) over an internal network, and the proxy only lets
+  through what building and publishing images needs: build, pull, tag, push,
+  remove. It cannot create containers or exec. This only works because smoke
+  tests run as build steps: the proxy filters by URL and method, not by request
+  body, so allowing container creation would allow privileged containers. Needs
+  Docker Compose 2.24 or newer. CI runs the end-to-end test in both modes.
+  Note that the build itself still runs the Dockerfiles of your config repo, so
+  only point prebake at repos you trust.
 - The status/control API and the read-only registry have **no authentication**;
   keep them on an internal network. Cross-origin browser POSTs to the API are
   refused. Anyone who can reach it can trigger builds.

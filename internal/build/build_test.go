@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -40,7 +41,7 @@ func (f *fake) Build(_ context.Context, s Spec, _ io.Writer) error {
 	f.local[s.Tag] = true
 	return nil
 }
-func (f *fake) Run(_ context.Context, image, cmd string) (string, error) {
+func (f *fake) Test(_ context.Context, image, cmd string) (string, error) {
 	err := f.rec("run", cmd)
 	if _, bad := f.failOn["run:"+cmd]; bad {
 		return f.runOut[cmd], f.failOn["run:"+cmd]
@@ -279,14 +280,72 @@ func TestCLIBuildArgs(t *testing.T) {
 	}
 }
 
+func TestTestDockerfileKeepsCommandIntact(t *testing.T) {
+	got := TestDockerfile("localhost:5001/dev:x-candidate", `echo "a b" && test -n '$HOME' # <&>`+"\nfalse")
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) != 2 || lines[0] != "FROM localhost:5001/dev:x-candidate" {
+		t.Fatalf("a multi-line command must stay on one Dockerfile line:\n%s", got)
+	}
+	var argv []string
+	if !strings.HasPrefix(lines[1], "RUN ") || json.Unmarshal([]byte(strings.TrimPrefix(lines[1], "RUN ")), &argv) != nil {
+		t.Fatalf("not an exec-form RUN: %q", lines[1])
+	}
+	if len(argv) != 3 || argv[0] != "sh" || argv[1] != "-c" || argv[2] != `echo "a b" && test -n '$HOME' # <&>`+"\nfalse" {
+		t.Errorf("argv = %q", argv)
+	}
+}
+
+func TestCLITestRunsAsBuildAndCleansUp(t *testing.T) {
+	var calls [][]string
+	var stdins []string
+	c := &CLI{Exec: func(_ context.Context, stdin io.Reader, stdout, _ io.Writer, name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		in := ""
+		if stdin != nil {
+			b, _ := io.ReadAll(stdin)
+			in = string(b)
+		}
+		stdins = append(stdins, in)
+		if len(args) > 0 && args[0] == "buildx" {
+			io.WriteString(stdout, "#5 RUN sh -c false\n#5 ERROR: process did not complete successfully: exit code: 1\n")
+			return fmt.Errorf("exit 1")
+		}
+		return nil
+	}}
+	out, err := c.Test(context.Background(), "reg/dev:c", "false")
+	if err == nil || !strings.Contains(out, "exit code: 1") {
+		t.Fatalf("failing test must return the build output: %q %v", out, err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %v", calls)
+	}
+	build := strings.Join(calls[0], " ")
+	for _, want := range []string{"buildx build", "--no-cache", "-t reg/dev:c-test", "-f -"} {
+		if !strings.Contains(build, want) {
+			t.Errorf("build call lacks %q: %s", want, build)
+		}
+	}
+	if strings.Contains(build, "--load=false") || strings.Contains(strings.Join(calls[0], " "), " run ") {
+		t.Errorf("no container may be started: %s", build)
+	}
+	if stdins[0] != TestDockerfile("reg/dev:c", "false") {
+		t.Errorf("dockerfile on stdin = %q", stdins[0])
+	}
+	if got := strings.Join(calls[1], " "); got != "docker image rm reg/dev:c-test" {
+		t.Errorf("the test image must be removed even after a failure: %s", got)
+	}
+	for _, c := range calls {
+		for _, a := range c {
+			if a == "run" {
+				t.Errorf("docker run used: %v", c)
+			}
+		}
+	}
+}
+
 func TestCLIOthers(t *testing.T) {
 	ctx := context.Background()
-	c, rec := cli("hello\n", nil)
-	out, err := c.Run(ctx, "img", "echo hello")
-	if err != nil || out != "hello" || strings.Join((*rec)[0].args, " ") != "docker run --rm --platform linux/amd64 --entrypoint sh img -c echo hello" {
-		t.Errorf("%q %v %v", out, err, (*rec)[0].args)
-	}
-	c, _ = cli(`["localhost:5001/dev@sha256:aaa","other/dev@sha256:bbb"]`, nil)
+	c, _ := cli(`["localhost:5001/dev@sha256:aaa","other/dev@sha256:bbb"]`, nil)
 	if d, err := c.Digest(ctx, "localhost:5001/dev:latest"); err != nil || d != "sha256:aaa" {
 		t.Errorf("digest %q %v", d, err)
 	}
