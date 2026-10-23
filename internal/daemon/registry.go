@@ -17,3 +17,7 @@ func (r *LocalRegistry) Prune(ctx context.Context, repo string, keep int) ([]str
 }
 
 func (r *LocalRegistry) GC(ctx context.Context) error { return r.Server.GC(ctx) }
+
+func (r *LocalRegistry) Tags(ctx context.Context, repo string) ([]string, error) {
+	return r.Client.Tags(ctx, repo)
+}

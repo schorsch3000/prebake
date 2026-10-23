@@ -22,6 +22,7 @@ import (
 // --- fakes ---------------------------------------------------------------------------
 
 type fakeBuilder struct {
+	reg   *fakeRegistry // gets the alias tag of every successful build, like the real registry
 	mu    sync.Mutex
 	runs  []string        // "<container>:<flavor> <kind>"
 	fail  map[string]int  // container -> remaining failures
@@ -40,6 +41,9 @@ func (f *fakeBuilder) Run(_ context.Context, j build.Job, log io.Writer) (*build
 		}
 		return nil, errors.New("apt exploded")
 	}
+	if f.reg != nil {
+		f.reg.addTag(j.Container, build.Alias(j.Flavor))
+	}
 	return &build.Result{Kind: j.Kind, DateTag: j.Flavor + "-20261022-120000", Alias: build.Alias(j.Flavor), Digest: "sha256:" + j.Container}, nil
 }
 
@@ -56,6 +60,19 @@ type fakeRegistry struct {
 	pruned  []string // "<repo> keep=N"
 	gcs     int
 	removed map[string][]string
+	tags    map[string][]string
+}
+
+func (r *fakeRegistry) addTag(repo, tag string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tags[repo] = append(r.tags[repo], tag)
+}
+
+func (r *fakeRegistry) Tags(_ context.Context, repo string) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.tags[repo]...), nil
 }
 
 func (r *fakeRegistry) Prune(_ context.Context, repo string, keep int) ([]string, error) {
@@ -179,8 +196,10 @@ func (h *harness) start() {
 	if h.clk == nil {
 		h.clk = &clock{t: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
 	}
-	h.b = &fakeBuilder{fail: map[string]int{}, testF: map[string]bool{}}
-	h.reg = &fakeRegistry{removed: map[string][]string{}}
+	if h.reg == nil { // the registry lives in the data volume and survives a daemon restart
+		h.reg = &fakeRegistry{removed: map[string][]string{}, tags: map[string][]string{}}
+	}
+	h.b = &fakeBuilder{fail: map[string]int{}, testF: map[string]bool{}, reg: h.reg}
 	h.n = &recNotifier{}
 	h.store = store
 	h.src = &gitsync.Syncer{URL: filepath.Join(filepath.Dir(h.work), "origin.git"), Branch: "main", Dir: filepath.Join(h.data, "repo")}
@@ -196,6 +215,9 @@ func (h *harness) sync() {
 }
 
 func (h *harness) tick() { h.d.Tick(context.Background()) }
+
+// noCatchUp marks the startup catch-up as done, for tests of the regular slot behaviour.
+func (h *harness) noCatchUp() { h.d.catchUpDone = true }
 
 func jobState(s Status, key string) JobStatus {
 	for _, j := range s.Jobs {
@@ -264,6 +286,7 @@ func TestOutsideSlotNothingRunsExceptTrigger(t *testing.T) {
 	h := newHarness(t)
 	h.push("narrow slot", map[string]string{"prebake.yaml": "slots: [\"02:00-04:00\"]\nkeep: 4\n"})
 	h.sync()
+	h.noCatchUp()
 	h.tick() // 12:00 is outside
 	if got := h.b.take(); len(got) != 0 {
 		t.Fatalf("builds outside the slot: %v", got)
@@ -308,6 +331,7 @@ func TestRequestGCOverridesSlotOnly(t *testing.T) {
 	h := newHarness(t)
 	h.push("narrow slot", map[string]string{"prebake.yaml": "slots: [\"02:00-04:00\"]\nkeep: 4\nregistry:\n  gc_slot_only: true\n"})
 	h.sync()
+	h.noCatchUp()
 	h.tick() // 12:00, outside the slot
 	h.d.RequestGC()
 	h.tick()
@@ -472,6 +496,7 @@ func TestGCRunsAfterPruneInSlotOnly(t *testing.T) {
 	h := newHarness(t)
 	h.push("narrow slot", map[string]string{"prebake.yaml": "slots: [\"02:00-04:00\"]\nkeep: 4\nregistry:\n  gc_slot_only: true\n"})
 	h.sync()
+	h.noCatchUp()
 	h.reg.removed["base"] = []string{"default-20260101-000000"}
 	h.d.Trigger("base", "", schedule.Rebuild) // outside the slot
 	h.tick()
@@ -552,6 +577,7 @@ func TestTriggerBuildsNeverBuiltParentsFirst(t *testing.T) {
 	h := newHarness(t)
 	h.push("narrow slot", map[string]string{"prebake.yaml": "slots: [\"02:00-04:00\"]\nkeep: 4\n"})
 	h.sync()
+	h.noCatchUp()
 
 	// triggering the child while nothing was ever built: its parent has no <parent>:latest yet,
 	// so it is queued too (ignoring the slot, like the trigger itself) and built first
@@ -589,5 +615,124 @@ func TestTriggerParentsAreTransitive(t *testing.T) {
 	h.tick()
 	if got := strings.Join(h.b.take(), ","); got != "base:default rebuild,child:default rebuild,grand:default rebuild" {
 		t.Errorf("builds = %s", got)
+	}
+}
+
+// --- startup catch-up -------------------------------------------------------------------
+
+// seedBuilt records an earlier successful build in the state store, finished `age` ago, and
+// registers its alias tag as present in the registry.
+func (h *harness) seedBuilt(container string, kind schedule.Kind, age time.Duration) {
+	h.t.Helper()
+	fin := h.clk.now().Add(-age)
+	_, err := h.store.RecordJob(state.JobRecord{Container: container, Flavor: "default", Kind: kind,
+		Started: fin.Add(-time.Minute), Finished: fin, OK: true, DateTag: "default-20260101-000000", Digest: "sha256:old"})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	h.reg.addTag(container, "latest")
+}
+
+func narrowSlotHarness(t *testing.T) *harness {
+	h := newHarness(t)
+	h.push("narrow slot, one more container", map[string]string{
+		"prebake.yaml":                   "slots: [\"02:00-04:00\"]\nkeep: 4\n",
+		"containers/solo/Dockerfile":     "FROM debian\n",
+		"containers/solo/container.yaml": "tests: [\"true\"]\n",
+	})
+	return h
+}
+
+func TestStartupBuildsAbsentFirstThenDue(t *testing.T) {
+	h := narrowSlotHarness(t)                             // 12:00 is outside the 02:00-04:00 slot
+	h.seedBuilt("base", schedule.Rebuild, 3*24*time.Hour) // refresh (1d) is overdue, rebuild (7d) is not
+	h.seedBuilt("child", schedule.Rebuild, time.Hour)     // fresh: not due
+	// solo was never built
+	h.sync()
+	h.tick()
+	got := h.b.take()
+	if len(got) != 2 || got[0] != "solo:default rebuild" || got[1] != "base:default refresh" {
+		t.Fatalf("builds = %v, want the absent solo first, then base's refresh", got)
+	}
+	// it is a one-time catch-up: the regular rules apply from now on (outside the slot: nothing)
+	h.clk.advance(2 * 24 * time.Hour) // child and the others become due, but 12:00 is outside the slot
+	h.tick()
+	if got := h.b.take(); len(got) != 0 {
+		t.Errorf("a second tick must respect the slots again: %v", got)
+	}
+}
+
+func TestStartupBuildsParentsBeforeChildrenWithinAbsent(t *testing.T) {
+	h := narrowSlotHarness(t)
+	h.sync()
+	h.tick()
+	got := h.b.take()
+	idx := func(s string) int {
+		for i, g := range got {
+			if g == s {
+				return i
+			}
+		}
+		return -1
+	}
+	if len(got) != 3 || idx("base:default rebuild") < 0 || idx("child:default rebuild") < idx("base:default rebuild") {
+		t.Errorf("everything absent is built, the parent before its child: %v", got)
+	}
+}
+
+func TestStartupTreatsAMissingAliasAsAbsent(t *testing.T) {
+	h := narrowSlotHarness(t)
+	h.seedBuilt("base", schedule.Rebuild, time.Hour)
+	h.seedBuilt("child", schedule.Rebuild, time.Hour)
+	h.seedBuilt("solo", schedule.Rebuild, time.Hour)
+	h.reg.mu.Lock()
+	h.reg.tags["base"] = nil // the registry lost base (wiped volume), the state still says it was built
+	h.reg.mu.Unlock()
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 1 || got[0] != "base:default rebuild" {
+		t.Errorf("builds = %v", got)
+	}
+}
+
+func TestStartupLeavesParkedJobsParked(t *testing.T) {
+	h := narrowSlotHarness(t)
+	h.sync()
+	h.noCatchUp()
+	h.b.fail["base"] = 2
+	h.d.Trigger("base", "", schedule.Rebuild) // fails, retries once, parks
+	h.tick()
+	h.clk.advance(16 * time.Minute)
+	h.d.Trigger("base", "", schedule.Rebuild)
+	h.b.fail["base"] = 1
+	h.tick()
+	h.b.take()
+	h.clk.advance(16 * time.Minute)
+	h.tick()
+	h.b.take()
+	if j := jobState(h.d.Status(), "base:default"); j.State != "parked" {
+		t.Fatalf("setup: base should be parked, is %q", j.State)
+	}
+	h.start() // restart: catch-up runs, but must not release the parked job
+	h.sync()
+	h.tick()
+	for _, b := range h.b.take() {
+		if strings.HasPrefix(b, "base:") || strings.HasPrefix(b, "child:") {
+			t.Errorf("a parked job (or its child) was built at startup: %s", b)
+		}
+	}
+	if j := jobState(h.d.Status(), "base:default"); j.State != "parked" {
+		t.Errorf("state = %q", j.State)
+	}
+}
+
+func TestStartupFromDiskCheckoutNeedsNoNetwork(t *testing.T) {
+	h := narrowSlotHarness(t)
+	h.sync()
+	h.noCatchUp()
+	h.start() // restart with a checkout on disk, nothing built yet, and no sync before the tick
+	h.tick()
+	if got := h.b.take(); len(got) != 3 {
+		t.Errorf("catch-up from the checkout on disk: %v", got)
 	}
 }

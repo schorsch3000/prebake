@@ -189,3 +189,20 @@ func TestFlavorsAreIndependentKeys(t *testing.T) {
 	}
 	none(t, q, t0, true) // child waits for any pending flavor of the parent
 }
+
+func TestEnqueueNowIgnoresSlotsButNotParking(t *testing.T) {
+	q := NewQueue(retry, nil)
+	q.EnqueueNow(k("a"), Rebuild)
+	if got := next(t, q, t0, false); got != k("a") { // not in a slot
+		t.Fatal(got)
+	}
+	q.Fail(k("a"), t0, "x")
+	none(t, q, t0.Add(retry), false) // the retry after a failure waits for a slot again
+	next(t, q, t0.Add(retry), true)
+	q.Fail(k("a"), t0.Add(retry), "x") // parked
+	q.EnqueueNow(k("a"), Rebuild)
+	none(t, q, t0.Add(48*time.Hour), false)
+	if s, _ := q.StatusOf(k("a")); s != Parked {
+		t.Errorf("EnqueueNow must not unpark: %v", s)
+	}
+}

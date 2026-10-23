@@ -139,6 +139,15 @@ If the host was off during a slot, due jobs run at the next slot (catch-up).
 Slots that cross midnight (`22:00-02:00`) are supported. Jitter spreads start
 times so jobs do not all begin at slot start.
 
+### 6.2a Startup catch-up
+
+The first time the daemon has a config after a start (from the checkout on disk, or after
+the first fetch) it queues, ignoring slots and jitter: first every (container, flavor) that
+is absent, meaning never built or whose alias tag is missing from the registry, then every
+one that is due for a refresh or rebuild now (no look-ahead to the next slot). The queue's
+normal rules still apply: parents before children, one build at a time, parked jobs stay
+parked, a failed job is retried inside a slot. It runs once per process.
+
 ### 6.3 Queue and retries
 
 - One build at a time (global lock). A queue orders due jobs.

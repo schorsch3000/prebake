@@ -35,6 +35,8 @@ type Builder interface {
 type Registry interface {
 	// Prune untags the date tags of repo beyond keep and returns them.
 	Prune(ctx context.Context, repo string, keep int) ([]string, error)
+	// Tags lists the tags of repo (none for an unknown repository).
+	Tags(ctx context.Context, repo string) ([]string, error)
 	// GC collects unreferenced manifests and blobs; the build lock is held by the caller.
 	GC(ctx context.Context) error
 }
@@ -83,15 +85,16 @@ type Daemon struct {
 	notifier notify.Notifier
 	queue    *schedule.Queue
 
-	mu         sync.Mutex
-	repo       *config.Repo
-	repoSHA    string
-	repoStatus RepoStatus
-	badSHA     string                // last commit we reported as invalid
-	failing    map[schedule.Key]bool // keys with an unreported-recovery failure
-	gcPending  bool
-	gcForce    bool                    // manual request: ignore gc_slot_only
-	lastRun    map[schedule.Key]string // last result summary for status
+	mu          sync.Mutex
+	repo        *config.Repo
+	repoSHA     string
+	repoStatus  RepoStatus
+	badSHA      string                // last commit we reported as invalid
+	failing     map[schedule.Key]bool // keys with an unreported-recovery failure
+	gcPending   bool
+	catchUpDone bool                    // the startup catch-up ran (scheduler goroutine only)
+	gcForce     bool                    // manual request: ignore gc_slot_only
+	lastRun     map[schedule.Key]string // last result summary for status
 
 	backoff time.Duration // current sync retry backoff
 	wake    chan struct{}

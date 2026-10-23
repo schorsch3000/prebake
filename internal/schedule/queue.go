@@ -147,6 +147,17 @@ func (q *Queue) Trigger(k Key, kind Kind) {
 	q.enqueue(k, kind, true)
 }
 
+// EnqueueNow queues a job that ignores slots, without unparking: a parked job stays parked
+// (only a push or a manual trigger releases it). Used for the startup catch-up.
+func (q *Queue) EnqueueNow(k Key, kind Kind) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if e := q.jobs[k]; e != nil && e.status == Parked {
+		return
+	}
+	q.enqueue(k, kind, true)
+}
+
 // UnparkAll re-queues every parked and skipped job; call it after a valid push.
 func (q *Queue) UnparkAll() {
 	q.mu.Lock()

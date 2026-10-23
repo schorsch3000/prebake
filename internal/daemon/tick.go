@@ -68,6 +68,10 @@ func (d *Daemon) Tick(ctx context.Context) {
 		return
 	}
 	d.queue.SetRetryDelay(repo.Global.RetryDelay.Std())
+	if !d.catchUpDone {
+		d.catchUpDone = true
+		d.catchUp(ctx, repo)
+	}
 	now := d.now()
 	for _, k := range d.keys() {
 		img, err := d.store.ImageState(k.Container, k.Flavor)
@@ -107,6 +111,61 @@ func (d *Daemon) RequestGC() {
 	d.gcPending, d.gcForce = true, true
 	d.mu.Unlock()
 	d.Wake()
+}
+
+// catchUp runs once, when the daemon first has a config (at start from the checkout on disk,
+// or after the first fetch). Slots exist to keep builds out of working hours, but after a
+// start there is a backlog and someone is waiting for it, so it is built right away:
+// first everything that is absent (never built, or its alias tag is missing from the
+// registry), then what is due for a refresh or rebuild. Parents still go before their
+// children, and parked jobs stay parked.
+func (d *Daemon) catchUp(ctx context.Context, repo *config.Repo) {
+	type job struct {
+		key  schedule.Key
+		kind schedule.Kind
+	}
+	var absent, due []job
+	now := d.now()
+	for _, k := range d.keys() {
+		img, err := d.store.ImageState(k.Container, k.Flavor)
+		if err != nil {
+			d.log.Error("cannot read state", "key", k, "err", err)
+			continue
+		}
+		if img.LastRebuild.IsZero() || d.aliasMissing(ctx, k) {
+			absent = append(absent, job{k, schedule.Rebuild})
+			continue
+		}
+		eff := repo.Containers[k.Container].Effective(repo.Global)
+		if kind, _ := schedule.Pick(policyOf(eff), img.State, now); kind != schedule.None {
+			due = append(due, job{k, kind})
+		}
+	}
+	if len(absent)+len(due) == 0 {
+		return
+	}
+	d.log.Info("startup catch-up: building now, outside the slots", "absent", len(absent), "due", len(due))
+	for _, j := range append(absent, due...) {
+		d.queue.EnqueueNow(j.key, j.kind)
+	}
+}
+
+// aliasMissing reports whether the registry certainly lacks the moving tag of a key that the
+// state says was built (a wiped or replaced registry). Errors count as "present": a registry
+// that cannot be asked must not cause a rebuild of everything.
+func (d *Daemon) aliasMissing(ctx context.Context, k schedule.Key) bool {
+	tags, err := d.registry.Tags(ctx, k.Container)
+	if err != nil {
+		d.log.Warn("cannot list registry tags", "container", k.Container, "err", err)
+		return false
+	}
+	alias := build.Alias(k.Flavor)
+	for _, t := range tags {
+		if t == alias {
+			return false
+		}
+	}
+	return true
 }
 
 // Trigger queues a job right now, bypassing slots, and unparks it.

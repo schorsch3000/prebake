@@ -101,6 +101,12 @@ by the Dockerfile, not in `extra_files`) are errors too.
 
 - Jobs start only inside a slot. A job that would become due before the next
   slot starts runs in the current one, so images are never later than due.
+- **Startup catch-up:** when the daemon starts it does not wait for a slot. Right away it
+  builds everything that is *absent* (never built, or missing from the registry, for
+  example after the registry volume was wiped), and after that everything that is
+  already due for a refresh or rebuild. Parents still go before their children, and
+  parked jobs stay parked. This happens once per start; afterwards the slot rules apply.
+  A container that is added later by a push is built in the next slot (or trigger it).
 - A rebuild resets the refresh clock; when both are due only the rebuild runs.
 - One build at a time. A parent is built before its child when both are due. A
   parent build does not make the child due; children use the parent's `latest`.
