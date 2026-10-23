@@ -133,6 +133,7 @@ func runDaemon(ctx context.Context, cfg *daemonConfig, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	log.Info("time zone of the build slots (TZ, else /etc/localtime)", "zone", time.Now().Format("MST -07:00"))
 	log.Info("SSH deploy key (add it as a read-only deploy key to the config repo)",
 		"fingerprint", id.Fingerprint)
 	// the key is also printed bare so that it can be copied from the log

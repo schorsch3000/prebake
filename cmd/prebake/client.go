@@ -95,6 +95,9 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		enc.Encode(dto)
 		return 0
 	}
+	if dto.TimeZone != "" {
+		fmt.Fprintf(stdout, "time zone of the build slots: %s\n", dto.TimeZone)
+	}
 	fmt.Fprintf(stdout, "repo: %s  active=%s head=%s\n", dto.Repo.State, short(dto.Repo.Active, 7), short(dto.Repo.Head, 7))
 	if dto.Repo.Error != "" {
 		fmt.Fprintf(stdout, "      %s\n", strings.ReplaceAll(strings.TrimSpace(dto.Repo.Error), "\n", "\n      "))

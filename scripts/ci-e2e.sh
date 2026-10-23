@@ -8,7 +8,11 @@ origin=${CI_ORIGIN:-/tmp/ci-origin.git}
 work=$(mktemp -d)
 gitconfig=$work/gitconfig
 printf '[safe]\n\tdirectory = *\n' > "$gitconfig"
-export CI_ORIGIN=$origin CI_GITCONFIG=$gitconfig REPO_URL=/origin.git
+# A host time zone that differs from the runner's (UTC), mounted as /etc/localtime, to prove
+# that the daemon takes its zone from the host mount when TZ is not set.
+unset TZ
+cp /usr/share/zoneinfo/Asia/Tokyo "$work/localtime"
+export CI_ORIGIN=$origin CI_GITCONFIG=$gitconfig REPO_URL=/origin.git LOCALTIME_FILE=$work/localtime
 # PREBAKE_PROXY=1 runs the daemon behind the filtering docker socket proxy: that is a
 # standalone compose file, used instead of docker-compose.yaml. The CI file is merged on top.
 if [ "${PREBAKE_PROXY:-}" = 1 ]; then
@@ -77,6 +81,10 @@ wait_for() {
 job_built() { curl -fsS "$status" | jq -e --arg c "$1" '.jobs[] | select(.container == $c) | .state == "idle" and .last_rebuild != null'; }
 
 wait_for 60 "status API" curl -fsS "$status"
+
+echo "== time zone comes from the mounted /etc/localtime"
+curl -fsS "$status" | jq -e '.time_zone | endswith("+09:00")' >/dev/null
+test "$("${compose[@]}" exec -T prebake date +%z)" = +0900
 wait_for 300 "ci-demo to be built" job_built ci-demo
 
 echo "== registry: read-only side serves, refuses writes"

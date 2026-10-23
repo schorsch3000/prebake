@@ -259,7 +259,7 @@ func statusServer(t *testing.T, dto string) (*httptest.Server, *[]string) {
 	return srv, &posts
 }
 
-const statusJSON = `{"generated_at":"2026-10-22T02:00:00Z","repo":{"state":"degraded","head":"bbbbbbbbbb","active":"aaaaaaaaaa","error":"containers/x: stray file"},
+const statusJSON = `{"generated_at":"2026-10-22T02:00:00Z","time_zone":"JST +09:00","repo":{"state":"degraded","head":"bbbbbbbbbb","active":"aaaaaaaaaa","error":"containers/x: stray file"},
 "jobs":[
  {"container":"late","flavor":"default","state":"idle","last_rebuild":"2026-10-20T02:00:00Z","next_kind":"refresh","next_run":"2026-10-23T02:00:00Z"},
  {"container":"parked","flavor":"cuda","state":"parked","error":"apt exploded\nsecond line"},
@@ -272,7 +272,7 @@ func TestStatusCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("%d %s", code, errOut)
 	}
-	for _, want := range []string{"repo: degraded  active=aaaaaaa head=bbbbbbb", "containers/x: stray file", "CONTAINER", "parked", "apt exploded", "never"} {
+	for _, want := range []string{"time zone of the build slots: JST +09:00", "repo: degraded  active=aaaaaaa head=bbbbbbb", "containers/x: stray file", "CONTAINER", "parked", "apt exploded", "never"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}

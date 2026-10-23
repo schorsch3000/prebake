@@ -32,8 +32,10 @@ type KeyInfo struct {
 // StatusDTO is the JSON document of GET /status.
 type StatusDTO struct {
 	GeneratedAt time.Time `json:"generated_at"`
-	Repo        RepoDTO   `json:"repo"`
-	Jobs        []JobDTO  `json:"jobs"`
+	// TimeZone is the zone the build slots are interpreted in, e.g. "CET +01:00".
+	TimeZone string   `json:"time_zone"`
+	Repo     RepoDTO  `json:"repo"`
+	Jobs     []JobDTO `json:"jobs"`
 }
 
 type RepoDTO struct {
@@ -69,7 +71,7 @@ func tp(t time.Time) *time.Time {
 
 // ToDTO converts the daemon snapshot.
 func ToDTO(s daemon.Status, now time.Time) StatusDTO {
-	out := StatusDTO{GeneratedAt: now.UTC(), Jobs: []JobDTO{}, Repo: RepoDTO{
+	out := StatusDTO{GeneratedAt: now.UTC(), TimeZone: now.Format("MST -07:00"), Jobs: []JobDTO{}, Repo: RepoDTO{
 		State: string(s.Repo.State), Head: s.Repo.Head, Active: s.Repo.Active, Error: s.Repo.Error,
 		LastFetch: tp(s.Repo.LastFetch), LastChanged: tp(s.Repo.LastChanged),
 	}}
@@ -219,7 +221,7 @@ pre{margin:0;white-space:pre-wrap}
 <td>{{.DateTag}} <code>{{short .Digest}}</code></td>
 </tr>{{else}}<tr><td colspan="7">no containers loaded yet</td></tr>{{end}}
 </table>
-<p><small>generated {{ts .GeneratedAt}} · <a href="/status">json</a> · <a href="/pubkey">deploy key</a></small></p>
+<p><small>generated {{ts .GeneratedAt}} · slots in {{.TimeZone}} · <a href="/status">json</a> · <a href="/pubkey">deploy key</a></small></p>
 </body></html>`))
 
 func (s *server) page(w http.ResponseWriter, r *http.Request) {

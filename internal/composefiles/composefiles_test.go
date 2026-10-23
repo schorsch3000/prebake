@@ -78,6 +78,35 @@ func TestSocketMountOnlyInDirectFile(t *testing.T) {
 	}
 }
 
+// The host's time zone is mounted read-only, without creating a missing host path, and the
+// compose files must not set a TZ default (TZ="" would mean UTC to Go and hide the mount).
+func TestHostTimeZoneMounted(t *testing.T) {
+	for _, f := range []string{"../../docker-compose.yaml", "../../docker-compose.proxy.yaml"} {
+		svc := dig(t, load(t, f), "services", "prebake")
+		found := false
+		for _, v := range svc["volumes"].([]any) {
+			m, ok := v.(map[string]any)
+			if !ok || m["target"] != "/etc/localtime" {
+				continue
+			}
+			found = true
+			if m["type"] != "bind" || m["read_only"] != true || dig(t, m, "bind")["create_host_path"] != false {
+				t.Errorf("%s: /etc/localtime must be a read-only bind with create_host_path: false: %v", f, m)
+			}
+			if src, _ := m["source"].(string); !strings.Contains(src, "LOCALTIME_FILE") || !strings.Contains(src, "/etc/localtime") {
+				t.Errorf("%s: unexpected source %q", f, src)
+			}
+		}
+		if !found {
+			t.Errorf("%s: no /etc/localtime mount", f)
+		}
+		tz, present := dig(t, svc, "environment")["TZ"]
+		if !present || tz != nil {
+			t.Errorf("%s: TZ must be a bare pass-through (no value), got %v", f, tz)
+		}
+	}
+}
+
 func TestProxyFileSecurityBasics(t *testing.T) {
 	proxy := load(t, "../../docker-compose.proxy.yaml")
 	svc := dig(t, proxy, "services", "docker-proxy")
@@ -116,6 +145,14 @@ func TestExampleEnvMatchesComposeFiles(t *testing.T) {
 		}
 		for _, m := range ref.FindAllStringSubmatch(string(b), -1) {
 			used[m[1]] = true
+		}
+	}
+	// bare pass-through entries (`TZ:` without value) read the variable from .env as well
+	for _, f := range []string{"../../docker-compose.yaml", "../../docker-compose.proxy.yaml"} {
+		for k, v := range dig(t, load(t, f), "services", "prebake", "environment") {
+			if v == nil {
+				used[k] = true
+			}
 		}
 	}
 	env, err := os.ReadFile("../../example.env")

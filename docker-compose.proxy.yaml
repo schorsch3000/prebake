@@ -30,7 +30,7 @@ services:
       REPO_BRANCH: ${REPO_BRANCH:-main}
       POLL_INTERVAL: ${POLL_INTERVAL:-5m}
       JITTER: ${JITTER:-15m}   # builds start at a random offset within this after a slot opens
-      TZ: ${TZ:-UTC}           # build slots are interpreted in this time zone
+      TZ:                      # build slots use this zone; unset = the host's zone (see /etc/localtime below)
       PUSHOVER_TOKEN: ${PUSHOVER_TOKEN:-}
       PUSHOVER_USER: ${PUSHOVER_USER:-}
       # TLS for the read-only registry listener: mount the files below and set both.
@@ -43,6 +43,14 @@ services:
       - "8080:8080"            # status page and control API (no authentication)
     volumes:
       - prebake-data:/data     # proxy mode: no Docker socket here
+      # The host's time zone, so build slots mean what you expect. create_host_path: false makes
+      # compose fail instead of creating a directory when the file does not exist.
+      - type: bind
+        source: ${LOCALTIME_FILE:-/etc/localtime}
+        target: /etc/localtime
+        read_only: true
+        bind:
+          create_host_path: false
       # - ./certs:/certs:ro
     networks:                  # proxy mode
       - default

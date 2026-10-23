@@ -87,6 +87,9 @@ func TestStatusJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &dto); err != nil {
 		t.Fatal(err)
 	}
+	if want := t0.Add(time.Minute).Format("MST -07:00"); dto.TimeZone != want {
+		t.Errorf("time_zone = %q, want %q", dto.TimeZone, want)
+	}
 	if dto.Repo.State != "degraded" || dto.Repo.Active != "aaaaaaaaaaaaaaaa" || len(dto.Jobs) != 2 {
 		t.Fatalf("%+v", dto)
 	}
@@ -110,7 +113,7 @@ func TestPageEscapesAndShowsState(t *testing.T) {
 	if code != 200 || !strings.HasPrefix(h.Get("Content-Type"), "text/html") {
 		t.Fatalf("%d %v", code, h)
 	}
-	for _, want := range []string{"degraded", "aaaaaaaaaaaa", "base", "child", "cuda", "parked", "default-20261022-020000", "sha256:abcde"} {
+	for _, want := range []string{"slots in UTC", "degraded", "aaaaaaaaaaaa", "base", "child", "cuda", "parked", "default-20261022-020000", "sha256:abcde"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)
 		}

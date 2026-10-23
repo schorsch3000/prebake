@@ -65,7 +65,7 @@ containers/
 
 | key | default | meaning |
 |---|---|---|
-| `slots` | `["02:00-06:00"]` | build windows in the daemon's `TZ`; may cross midnight |
+| `slots` | `["02:00-06:00"]` | build windows in the daemon's time zone (the host's, see `TZ`); may cross midnight |
 | `defaults.rebuild_interval` | `7d` | full rebuild (`--no-cache --pull`); units `s m h d w` |
 | `defaults.refresh_interval` | `1d` | cheap refresh: previous image plus `refresh_cmd` |
 | `retry_delay` | `15m` | wait before the single retry of a failed job |
@@ -164,7 +164,7 @@ only, not for every retry.
 | `TLS_CERT` / `TLS_KEY` | unset | TLS for the read-only listener |
 | `KNOWN_HOSTS` | unset | pinned known_hosts; default is trust on first use |
 | `JITTER` | `15m` | random start offset after a slot opens, `0` disables |
-| `TZ` | `UTC` | time zone of the slots |
+| `TZ` | host's zone | time zone of the slots. Unset, the compose files mount the host's `/etc/localtime` read-only (`LOCALTIME_FILE` to point elsewhere); `TZ` overrides it. `prebake status` and the status page show the zone in use |
 | `VERBOSE` | unset | log every registry request |
 
 Flags override variables; see `prebake daemon --help`.
