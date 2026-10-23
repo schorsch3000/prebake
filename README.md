@@ -210,6 +210,27 @@ Flags override variables; see `prebake daemon --help`.
 - Use a **read-only** deploy key. Secrets (Pushover) come from the environment or
   Docker secrets, never from the config repo.
 
+## The command line tool
+
+Everything except `daemon` also works standalone on your own machine: validate
+the config repo before pushing, install the pre-commit hook, query a running
+daemon. Release archives for linux (amd64, arm64), macOS (amd64, arm64) and
+windows (amd64) are on the [releases page](https://github.com/schorsch3000/prebake/releases),
+with a `checksums.txt`:
+
+```sh
+v=0.1.0 os=linux arch=amd64
+curl -fsSLO https://github.com/schorsch3000/prebake/releases/download/v$v/prebake_${v}_${os}_${arch}.tar.gz
+curl -fsSLO https://github.com/schorsch3000/prebake/releases/download/v$v/checksums.txt
+sha256sum -c --ignore-missing checksums.txt
+tar -xzf prebake_${v}_${os}_${arch}.tar.gz && sudo install prebake_${v}_${os}_${arch}/prebake /usr/local/bin/
+prebake version
+```
+
+CI only tests the linux build; the macOS and Windows binaries are built but not
+exercised (the daemon itself needs Linux and Docker anyway). The same binary is
+inside the container image.
+
 ## Images and releases
 
 CI publishes `ghcr.io/schorsch3000/prebake` (linux/amd64) once the whole pipeline
@@ -224,6 +245,7 @@ The compose files use `latest` by default; set `PREBAKE_IMAGE` in `.env` to pin
 a version or a digest (`ghcr.io/schorsch3000/prebake:1.2.3`,
 `ghcr.io/schorsch3000/prebake@sha256:...`). Upgrade with `docker compose pull && docker compose up -d`.
 `prebake version` shows what is running. To cut a release: `git tag v0.1.0 && git push origin v0.1.0`.
+That publishes the image tags above and creates a GitHub release with the CLI archives.
 
 The first publish creates the package as private. Make it public once (GitHub,
 your profile, Packages, `prebake`, Package settings, Change visibility) or

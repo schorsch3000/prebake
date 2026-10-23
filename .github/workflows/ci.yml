@@ -32,6 +32,12 @@ jobs:
       - run: go test -race -count=1 ./...
       - name: static build (no cgo)
         run: CGO_ENABLED=0 go build -o /dev/null ./cmd/prebake
+      - name: release archives build (dry run)
+        run: |
+          scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
+          tar -xzOf "$RUNNER_TEMP"/dist/prebake_0.0.0-ci_linux_amd64.tar.gz prebake_0.0.0-ci_linux_amd64/prebake > "$RUNNER_TEMP/prebake"
+          chmod +x "$RUNNER_TEMP/prebake"
+          "$RUNNER_TEMP/prebake" version | grep -q '^prebake 0.0.0-ci '
 
   integration:
     name: docker integration tests
@@ -152,3 +158,28 @@ jobs:
         run: |
           docker run --rm "ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}" version
           echo "published ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: GitHub release with CLI binaries
+    runs-on: ubuntu-latest
+    needs: [unit, integration, image, e2e]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build archives
+        run: scripts/build-release.sh "$GITHUB_REF_NAME" dist
+      - name: create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag --generate-notes "${flags[@]}" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Command line tool for validating a config repo and talking to a running daemon (\`validate\`, \`install-hook\`, \`status\`, \`trigger\`, ...). Check the download against \`checksums.txt\`. The daemon itself is the container image \`ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME#v}\`. The macOS and Windows archives are built but not tested by CI."
