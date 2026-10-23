@@ -161,14 +161,18 @@ For each job:
 1. Verify the checkout validates (see §8). Never build from an invalid tree.
 2. Resolve parent reference: build arg `PARENT` (and `PARENT_<NAME>`) is set to
    `<registry>/<parent>:latest` of the internal registry.
-3. Build to a candidate tag `<name>:<flavor>-<YYYYmmdd-HHMM>-candidate` via the
-   host Docker (`docker buildx build`, amd64).
+3. Build to a local candidate tag `<registry>/<name>:<flavor>-<YYYYmmdd-HHMMSS>-candidate`
+   (UTC) via the host Docker (`docker buildx build --load`, amd64).
    - Rebuild: `--no-cache --pull`.
-   - Refresh: `FROM <previous latest>`, then `RUN <refresh_cmd>` using a
-     generated Dockerfile layered on the previous image.
+   - Refresh: `FROM <previous alias>`, then `RUN <refresh_cmd>` using a
+     generated Dockerfile layered on the previous image (pulled from the
+     registry if not in the local store). Without `refresh_cmd`, or without a
+     previous image, the job is upgraded to a rebuild and a note is recorded.
 4. Run `tests:` commands in a throwaway container from the candidate (if any).
-5. Push to the internal registry (write listener), retag as the final date tag,
-   then move `latest` / flavor alias (promote).
+5. Promote: tag and push the date tag `<flavor>-<YYYYmmdd-HHMMSS>` first; only
+   after that succeeded, tag and push the moving alias. The alias is `latest`
+   for the `default` flavor and the flavor name otherwise. The candidate is
+   always removed locally.
 6. Record result, digest and timings in state.
 7. Run retention (§10) if the job succeeded.
 
