@@ -21,3 +21,11 @@ func (r *LocalRegistry) GC(ctx context.Context) error { return r.Server.GC(ctx) 
 func (r *LocalRegistry) Tags(ctx context.Context, repo string) ([]string, error) {
 	return r.Client.Tags(ctx, repo)
 }
+
+func (r *LocalRegistry) Repositories(ctx context.Context) ([]string, error) {
+	return r.Client.Repositories(ctx)
+}
+
+func (r *LocalRegistry) Untag(ctx context.Context, repo, tag string) error {
+	return r.Client.Untag(ctx, repo, tag)
+}

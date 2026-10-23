@@ -25,9 +25,10 @@ func cmdCompletion(args []string, stdout, stderr io.Writer) int {
 // cmdComplete is the hidden helper the scripts call for names that only the running daemon
 // knows. It never fails loudly: a completion that prints an error is worse than none.
 func cmdComplete(args []string, stdout io.Writer) int {
-	if len(args) == 0 || args[0] != "containers" {
+	if len(args) == 0 || (args[0] != "containers" && args[0] != "orphans") {
 		return 0
 	}
+	what := args[0]
 	fs := flag.NewFlagSet("__complete", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	url := clientFlags(fs)
@@ -38,12 +39,21 @@ func cmdComplete(args []string, stdout io.Writer) int {
 	}
 	seen := map[string]bool{}
 	var names []string
-	for _, j := range dto.Jobs {
-		for _, n := range []string{j.Container, j.Container + ":" + j.Flavor} {
+	add := func(container, flavor string) {
+		for _, n := range []string{container, container + ":" + flavor} {
 			if !seen[n] {
 				seen[n] = true
 				names = append(names, n)
 			}
+		}
+	}
+	if what == "orphans" { // what `purge` can remove: images of containers that are no longer in the config
+		for _, o := range dto.Orphans {
+			add(o.Container, o.Flavor)
+		}
+	} else {
+		for _, j := range dto.Jobs {
+			add(j.Container, j.Flavor)
 		}
 	}
 	sort.Strings(names)
@@ -121,8 +131,8 @@ func bashCompletion() string {
 	b.WriteString("    esac\n    case \"$cmd\" in\n")
 	for _, c := range commands {
 		switch c.Args {
-		case "containers":
-			fmt.Fprintf(&b, "      %s) [[ \"$cur\" == -* || $valued == 1 ]] || words=\"$words $(prebake __complete containers 2>/dev/null)\" ;;\n", c.Name)
+		case "containers", "orphans":
+			fmt.Fprintf(&b, "      %s) [[ \"$cur\" == -* || $valued == 1 ]] || words=\"$words $(prebake __complete %s 2>/dev/null)\" ;;\n", c.Name, c.Args)
 		case "shell":
 			fmt.Fprintf(&b, "      %s) words=\"bash zsh fish\" ;;\n", c.Name)
 		}
@@ -149,6 +159,7 @@ func zshCompletion() string {
 	var b strings.Builder
 	b.WriteString("#compdef prebake\n# zsh completion for prebake: prebake completion zsh > \"${fpath[1]}/_prebake\"\n\n")
 	b.WriteString("_prebake_containers() {\n  local -a c\n  c=(${${(f)\"$(prebake __complete containers 2>/dev/null)\"}//:/\\\\:})\n  _describe 'container' c\n}\n\n")
+	b.WriteString("_prebake_orphans() {\n  local -a c\n  c=(${${(f)\"$(prebake __complete orphans 2>/dev/null)\"}//:/\\\\:})\n  _describe 'removed container' c\n}\n\n")
 	b.WriteString("_prebake() {\n  local -a cmds\n  cmds=(\n")
 	for _, c := range commands {
 		fmt.Fprintf(&b, "    '%s:%s'\n", c.Name, zshEscape(c.Help))
@@ -178,6 +189,8 @@ func zshCompletion() string {
 		switch c.Args {
 		case "containers":
 			b.WriteString("        '1:container:_prebake_containers'\n")
+		case "orphans":
+			b.WriteString("        '1:removed container:_prebake_orphans'\n")
 		case "shell":
 			b.WriteString("        '1:shell:(bash zsh fish)'\n")
 		default:
@@ -220,8 +233,8 @@ func fishCompletion() string {
 			fmt.Fprintf(&b, "%s -d '%s'\n", line, fishEscape(f.Help))
 		}
 		switch c.Args {
-		case "containers":
-			fmt.Fprintf(&b, "complete -c prebake %s -a '(prebake __complete containers 2>/dev/null)' -d 'container[:flavor]'\n", cond)
+		case "containers", "orphans":
+			fmt.Fprintf(&b, "complete -c prebake %s -a '(prebake __complete %s 2>/dev/null)' -d 'container[:flavor]'\n", cond, c.Args)
 		case "shell":
 			fmt.Fprintf(&b, "complete -c prebake %s -a 'bash zsh fish'\n", cond)
 		}

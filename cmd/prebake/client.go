@@ -170,6 +170,26 @@ func renderStatus(dto *api.StatusDTO, p palette) string {
 			when(j.LastRebuild), when(j.LastRefresh), needs, {errorSummary(j.Error), ansiDim}})
 	}
 	b.WriteString(p.table(rows))
+	b.WriteString(renderOrphans(dto, p))
+	return b.String()
+}
+
+// renderOrphans lists images of containers and flavors that are no longer in the config.
+func renderOrphans(dto *api.StatusDTO, p palette) string {
+	if len(dto.Orphans) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n%s\n", p.paint(ansiYellow, "no longer in the config (their images are removed after the grace period; `prebake purge <name>` removes them now):"))
+	rows := [][]cell{{{"NAME", ansiBold}, {"MISSING SINCE", ansiBold}, {"REMOVAL", ansiBold}, {"TAGS", ansiBold}}}
+	for _, o := range dto.Orphans {
+		removal := cell{"kept (pruning is off)", ansiDim}
+		if o.RemoveAt != nil {
+			removal = cell{fmtTime(o.RemoveAt), ""}
+		}
+		rows = append(rows, []cell{{o.Container + ":" + o.Flavor, ""}, {fmtTime(o.Since), ""}, removal, {strconv.Itoa(len(o.Tags)), ""}})
+	}
+	b.WriteString(p.table(rows))
 	return b.String()
 }
 
@@ -330,6 +350,7 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 		rows = append(rows, []cell{{j.Container, ""}, {j.Flavor, ""}, {j.NextKind, ""}, {fmtTime(j.NextRun), ""}, in, why})
 	}
 	fmt.Fprint(stdout, p.table(rows))
+	fmt.Fprint(stdout, renderOrphans(dto, p))
 	return 0
 }
 
@@ -523,6 +544,60 @@ func cmdSync(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+}
+
+func cmdPurge(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("purge", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: prebake purge <container>[:<flavor>] [--yes] [--url URL]")
+	}
+	url := clientFlags(fs)
+	yes := fs.Bool("yes", false, "really remove; without it only the plan is shown")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if len(pos) != 1 {
+		fs.Usage()
+		return 2
+	}
+	container, flavor, _ := strings.Cut(pos[0], ":")
+	path := "/purge/" + container
+	if flavor != "" {
+		path += "/" + flavor
+	}
+	if !*yes {
+		path += "?dry_run=1"
+	}
+	body, code, err := post(*url, path)
+	if err != nil {
+		fmt.Fprintln(stderr, "prebake purge:", err)
+		return 2
+	}
+	var res struct {
+		Keys  []string `json:"keys"`
+		Error string   `json:"error"`
+	}
+	json.Unmarshal([]byte(body), &res)
+	if code != http.StatusOK && code != http.StatusAccepted {
+		msg := res.Error
+		if msg == "" {
+			msg = body
+		}
+		fmt.Fprintf(stderr, "prebake purge: %d %s\n", code, msg)
+		return 1
+	}
+	list := strings.Join(res.Keys, ", ")
+	if !*yes {
+		fmt.Fprintf(stdout, "would remove all images of: %s\nrun again with --yes to do it\n", list)
+		return 0
+	}
+	fmt.Fprintf(stdout, "removing all images of: %s (the disk space is reclaimed by the next garbage collection)\n", list)
+	return 0
 }
 
 func cmdGC(args []string, stdout, stderr io.Writer) int {

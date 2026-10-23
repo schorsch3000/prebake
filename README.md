@@ -81,6 +81,8 @@ containers/
 | `retry_delay` | `15m` | wait before the single retry of a failed job |
 | `keep` | `5` | date-tagged images kept per container and flavor (ceiling) |
 | `registry.gc_slot_only` | `true` | garbage-collect only inside a slot |
+| `registry.prune_removed` | `true` | remove the images of containers and flavors that are no longer in the config |
+| `registry.prune_removed_after` | `7d` | grace period before that happens |
 | `notify.pushover.priority_failure` / `priority_recovery` | `1` / `-1` | Pushover priority, -2..1 |
 
 `containers/<name>/container.yaml`
@@ -124,6 +126,24 @@ Unknown keys are errors. Stray files are errors too, in three places:
   sends a notification and parks the job until the next valid push or a manual
   trigger. Children of a parked parent are skipped.
 
+### Containers that are removed from the config
+
+When a container (or one flavor of it) disappears from the repo, its images stay in the registry for the grace
+period `registry.prune_removed_after` (7 days by default) and are then removed: all its tags are untagged, the next garbage
+collection frees the space, and its state and history are forgotten. The grace period is there so that a commit that
+removes something by mistake can be reverted: when the container is back in the config, nothing is removed.
+
+`prebake status` and `dry-run` list what is waiting for removal (when it went missing, when it will go). To remove it now:
+
+```sh
+prebake purge old-tools            # only shows what would be removed
+prebake purge old-tools --yes      # removes it (a container that is still in the config is refused)
+```
+
+Everything in the registry that the config does not account for counts, including a tag pushed by hand into a managed
+repository. Set `prune_removed: false` to keep everything and only get the list. A config that lists no containers at all
+never removes anything (that is a mistake, not a wish). This registry belongs to prebake: do not push other images into it.
+
 ### Validate before you push
 
 ```sh
@@ -163,6 +183,7 @@ prebake logs <container>[:<flavor>] [-f] [--tail N]
 prebake dry-run
 prebake sync [--commit SHA|HEAD] [--branch NAME]
 prebake trigger <container>[:<flavor>] [--kind rebuild|refresh]
+prebake purge <container>[:<flavor>] [--yes]
 prebake gc
 prebake show-key
 ```

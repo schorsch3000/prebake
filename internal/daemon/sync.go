@@ -71,6 +71,7 @@ func (d *Daemon) activate(repo *config.Repo, sha string, unpark bool) {
 	d.mu.Lock()
 	d.repo, d.repoSHA = repo, sha
 	d.repoStatus.Active = sha
+	d.lastReconcile = time.Time{} // a new config: look for removed containers at the next pass
 	d.mu.Unlock()
 	d.queue.SetParents(repo.Parents())
 	if unpark {

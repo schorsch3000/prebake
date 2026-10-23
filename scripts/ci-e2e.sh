@@ -160,6 +160,22 @@ git -C "$work/w" push -q origin HEAD:main
 demo_has_v2() { docker pull -q "localhost:$read_port/ci-demo:latest" && docker run --rm "localhost:$read_port/ci-demo:latest" test -f /v2; }
 wait_for 300 "ci-demo to be rebuilt from the changed Dockerfile" demo_has_v2
 
+echo "== a container removed from the repo is listed, then purged on request, and gone from the registry"
+git -C "$work/w" rm -q -r containers/ci-child
+git -C "$work/w" commit -q -m "remove ci-child"
+git -C "$work/w" push -q origin HEAD:main
+sha=$(git -C "$work/w" rev-parse HEAD)
+"${compose[@]}" exec -T prebake prebake sync --commit "$sha" --branch main --timeout 60s >/dev/null
+orphan_listed() { curl -fsS "$status" | jq -e '.orphans[]? | select(.container == "ci-child")'; }
+wait_for 120 "ci-child to be listed as removed from the config" orphan_listed
+"${compose[@]}" exec -T prebake prebake purge ci-child | grep -q "would remove"   # without --yes: only the plan
+"${compose[@]}" exec -T prebake prebake purge ci-demo >/dev/null 2>&1 && { echo "purging a container that is still in the config must fail" >&2; exit 1; }
+"${compose[@]}" exec -T prebake prebake purge ci-child --yes >/dev/null
+catalog() { curl -fsS "http://localhost:$read_port/v2/_catalog"; }
+child_gone() { ! catalog | jq -e '.repositories | index("ci-child")'; }
+wait_for 120 "ci-child to be gone from the registry" child_gone
+catalog | jq -e '.repositories | index("ci-demo")' >/dev/null
+
 echo "== an invalid push is rejected and the last good commit stays active"
 active=$(curl -fsS "$status" | jq -r .repo.active)
 echo stray > "$work/w/containers/ci-demo/stray.txt"

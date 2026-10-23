@@ -140,3 +140,32 @@ func TestRepositoriesPagination(t *testing.T) {
 		t.Fatalf("got %d repos, err %v", len(repos), err)
 	}
 }
+
+// A container that was removed from the config: after all its tags are removed and GC has run,
+// its repository must be gone from the catalog too, not linger as an empty entry.
+func TestRemovedRepositoryDisappearsFromTheCatalogAfterGC(t *testing.T) {
+	s := start(t, nil)
+	base := "http://" + s.WriteAddr()
+	c := &Client{Base: base}
+	ctx := context.Background()
+	push(t, base, "gone/app", "latest")
+	push(t, base, "gone/app", "default-20261001-020000")
+	push(t, base, "stays/app", "latest")
+	repos, _ := c.Repositories(ctx)
+	if len(repos) != 2 {
+		t.Fatalf("setup: %v", repos)
+	}
+	tags, _ := c.Tags(ctx, "gone/app")
+	for _, tag := range tags {
+		if err := c.Untag(ctx, "gone/app", tag); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.GC(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repos, err := c.Repositories(ctx)
+	if err != nil || len(repos) != 1 || repos[0] != "stays/app" {
+		t.Errorf("catalog after GC: %v %v", repos, err)
+	}
+}

@@ -188,6 +188,7 @@ func TestMigrationAddsInputsHashToExistingDatabase(t *testing.T) {
 	}
 	// simulate a database from before migration 2
 	s.db.Exec(`ALTER TABLE images DROP COLUMN inputs_hash`)
+	s.db.Exec(`DROP TABLE removed`)
 	s.db.Exec(`PRAGMA user_version = 1`)
 	s.db.Exec(`INSERT INTO images (container, flavor, last_rebuild) VALUES ('old', 'default', 5)`)
 	s.Close()
@@ -199,5 +200,57 @@ func TestMigrationAddsInputsHashToExistingDatabase(t *testing.T) {
 	img, err := s.ImageState("old", "default")
 	if err != nil || img.LastRebuild.IsZero() || img.InputsHash != "" {
 		t.Fatalf("%+v %v", img, err)
+	}
+}
+
+func TestRemovedRecordsAndForget(t *testing.T) {
+	s := open(t)
+	k := schedule.Key{Container: "old", Flavor: "default"}
+	first, err := s.MarkRemoved(k, t0)
+	if err != nil || !first.Equal(t0) {
+		t.Fatalf("%v %v", first, err)
+	}
+	// marking again keeps the first time: the grace period counts from when it went missing
+	again, _ := s.MarkRemoved(k, t0.Add(48*time.Hour))
+	if !again.Equal(t0) {
+		t.Errorf("second mark moved the time: %v", again)
+	}
+	all, _ := s.Removed()
+	if len(all) != 1 || !all[k].Equal(t0) {
+		t.Errorf("%v", all)
+	}
+	s.ClearRemoved(k)
+	if all, _ := s.Removed(); len(all) != 0 {
+		t.Errorf("cleared: %v", all)
+	}
+
+	// Forget removes image state, history, queue state and the record of one flavor only
+	other := schedule.Key{Container: "keep", Flavor: "default"}
+	for _, key := range []schedule.Key{k, other} {
+		r := rec(schedule.Rebuild, true, t0)
+		r.Container, r.Flavor = key.Container, key.Flavor
+		s.RecordJob(r)
+		s.PutQueueState(QueueState{Key: key, Status: "parked", Failures: 2})
+		s.MarkRemoved(key, t0)
+	}
+	keys, _ := s.KnownKeys()
+	if len(keys) != 2 {
+		t.Fatalf("known keys: %v", keys)
+	}
+	if err := s.Forget(k); err != nil {
+		t.Fatal(err)
+	}
+	keys, _ = s.KnownKeys()
+	if len(keys) != 1 || keys[0] != other {
+		t.Errorf("only the other key remains: %v", keys)
+	}
+	if h, _ := s.History("old", "default", 5); len(h) != 0 {
+		t.Errorf("history: %v", h)
+	}
+	if img, _ := s.ImageState("old", "default"); !img.LastRebuild.IsZero() {
+		t.Errorf("image state: %+v", img)
+	}
+	if all, _ := s.Removed(); len(all) != 1 {
+		t.Errorf("removed: %v", all)
 	}
 }

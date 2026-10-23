@@ -39,6 +39,11 @@ type Defaults struct {
 
 type Registry struct {
 	GCSlotOnly *bool `yaml:"gc_slot_only"`
+	// PruneRemoved removes the images of containers and flavors that are no longer in the
+	// config, PruneRemovedAfter later (a grace period, so that a commit that removes something
+	// by mistake can be reverted). Defaults: true and 7d.
+	PruneRemoved      *bool    `yaml:"prune_removed"`
+	PruneRemovedAfter Duration `yaml:"prune_removed_after"`
 }
 
 type Notify struct {
@@ -99,6 +104,13 @@ func (g *Global) ApplyDefaults() {
 	if g.Notify.Pushover.PriorityRecovery == nil {
 		v := -1
 		g.Notify.Pushover.PriorityRecovery = &v
+	}
+	if g.Registry.PruneRemoved == nil {
+		t := true
+		g.Registry.PruneRemoved = &t
+	}
+	if g.Registry.PruneRemovedAfter == 0 {
+		g.Registry.PruneRemovedAfter = Duration(7 * 24 * time.Hour)
 	}
 	if g.Registry.GCSlotOnly == nil {
 		t := true

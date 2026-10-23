@@ -41,6 +41,10 @@ type Registry interface {
 	Prune(ctx context.Context, repo string, keep int) ([]string, error)
 	// Tags lists the tags of repo (none for an unknown repository).
 	Tags(ctx context.Context, repo string) ([]string, error)
+	// Repositories lists every repository in the registry.
+	Repositories(ctx context.Context) ([]string, error)
+	// Untag removes one tag; GC reclaims the space.
+	Untag(ctx context.Context, repo, tag string) error
 	// GC collects unreferenced manifests and blobs; the build lock is held by the caller.
 	GC(ctx context.Context) error
 }
@@ -89,18 +93,21 @@ type Daemon struct {
 	notifier notify.Notifier
 	queue    *schedule.Queue
 
-	mu         sync.Mutex
-	repo       *config.Repo
-	repoSHA    string
-	repoStatus RepoStatus
-	badSHA     string                // last commit we reported as invalid
-	failing    map[schedule.Key]bool // keys with an unreported-recovery failure
-	gcPending  bool
-	gcForce    bool                       // manual request: ignore gc_slot_only
-	lastRun    map[schedule.Key]string    // last result summary for status
-	running    map[schedule.Key]time.Time // builds in progress and when they started
-	needs      map[schedule.Key]candidate // why work is pending, from the last scheduler pass
-	logs       map[schedule.Key]*LiveLog  // output of the current or last build in this process
+	mu            sync.Mutex
+	repo          *config.Repo
+	repoSHA       string
+	repoStatus    RepoStatus
+	badSHA        string                // last commit we reported as invalid
+	failing       map[schedule.Key]bool // keys with an unreported-recovery failure
+	gcPending     bool
+	gcForce       bool                       // manual request: ignore gc_slot_only
+	lastRun       map[schedule.Key]string    // last result summary for status
+	running       map[schedule.Key]time.Time // builds in progress and when they started
+	needs         map[schedule.Key]candidate // why work is pending, from the last scheduler pass
+	orphans       []Orphan                   // images of what is no longer in the config, from the last reconcile
+	lastReconcile time.Time
+	purgeReqs     []schedule.Key            // `prebake purge` requests, executed by the next scheduler pass
+	logs          map[schedule.Key]*LiveLog // output of the current or last build in this process
 
 	backoff time.Duration // current sync retry backoff
 	syncMu  sync.Mutex    // one fetch at a time: the poll loop and `prebake sync` must not interleave

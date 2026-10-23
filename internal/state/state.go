@@ -48,6 +48,11 @@ var migrations = []string{
 	);`,
 	// 2: fingerprint of the build inputs (config.InputsHash) of the last successful build
 	`ALTER TABLE images ADD COLUMN inputs_hash TEXT NOT NULL DEFAULT '';`,
+	// 3: containers and flavors that are no longer in the config, and since when
+	`CREATE TABLE IF NOT EXISTS removed (
+		container TEXT NOT NULL, flavor TEXT NOT NULL, since INTEGER NOT NULL,
+		PRIMARY KEY (container, flavor)
+	);`,
 }
 
 // Open opens (and migrates) the database at path; ":memory:" works for tests.
@@ -295,4 +300,77 @@ func (s *Store) QueueStates() ([]QueueState, error) {
 		out = append(out, q)
 	}
 	return out, rows.Err()
+}
+
+// MarkRemoved records that a container flavor is no longer in the config, since now, unless it
+// was recorded before; it returns the time of the first record.
+func (s *Store) MarkRemoved(k schedule.Key, now time.Time) (time.Time, error) {
+	if _, err := s.db.Exec(`INSERT OR IGNORE INTO removed (container, flavor, since) VALUES (?,?,?)`,
+		k.Container, k.Flavor, nano(now)); err != nil {
+		return time.Time{}, err
+	}
+	var since int64
+	if err := s.db.QueryRow(`SELECT since FROM removed WHERE container = ? AND flavor = ?`, k.Container, k.Flavor).Scan(&since); err != nil {
+		return time.Time{}, err
+	}
+	return fromNano(since), nil
+}
+
+// ClearRemoved forgets that a flavor was missing (it is back in the config).
+func (s *Store) ClearRemoved(k schedule.Key) error {
+	_, err := s.db.Exec(`DELETE FROM removed WHERE container = ? AND flavor = ?`, k.Container, k.Flavor)
+	return err
+}
+
+// Removed returns all flavors recorded as no longer in the config.
+func (s *Store) Removed() (map[schedule.Key]time.Time, error) {
+	rows, err := s.db.Query(`SELECT container, flavor, since FROM removed`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[schedule.Key]time.Time{}
+	for rows.Next() {
+		var k schedule.Key
+		var since int64
+		if err := rows.Scan(&k.Container, &k.Flavor, &since); err != nil {
+			return nil, err
+		}
+		out[k] = fromNano(since)
+	}
+	return out, rows.Err()
+}
+
+// KnownKeys returns every (container, flavor) the state remembers an image or a job for.
+func (s *Store) KnownKeys() ([]schedule.Key, error) {
+	rows, err := s.db.Query(`SELECT container, flavor FROM images UNION SELECT container, flavor FROM jobs UNION SELECT container, flavor FROM queue_state`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []schedule.Key
+	for rows.Next() {
+		var k schedule.Key
+		if err := rows.Scan(&k.Container, &k.Flavor); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// Forget deletes everything stored for a container flavor: its image state, job history, queue
+// state and the removal record.
+func (s *Store) Forget(k schedule.Key) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"images", "jobs", "queue_state", "removed"} {
+		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE container = ? AND flavor = ?`, k.Container, k.Flavor); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

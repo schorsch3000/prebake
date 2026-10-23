@@ -56,6 +56,10 @@ var commands = []cmdSpec{
 		{Name: "timeout", Value: "text", Help: "how long --commit waits for the commit to appear at the remote (default 2m)"},
 		{Name: "quiet", Help: "print nothing when it worked"},
 	}},
+	{Name: "purge", Group: groupClient, Help: "remove the images of a container that is no longer in the config, now", Args: "orphans", Flags: []flagSpec{
+		fURL,
+		{Name: "yes", Help: "really remove (without it only the plan is shown)"},
+	}},
 	{Name: "gc", Group: groupClient, Help: "run registry garbage collection", Flags: []flagSpec{fURL}},
 
 	{Name: "validate", Group: groupRepo, Help: "validate a config repo", Flags: []flagSpec{

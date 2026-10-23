@@ -270,6 +270,13 @@ retention needs delete and GC).
   non-date tags are never selected (`internal/retention`).
 - After a successful build: delete manifests beyond the effective keep (oldest
   first), per container and flavor.
+- Removed containers: every (container, flavor) that the registry or the state knows but the active
+  config does not is an orphan. It is recorded with the time it was first seen missing (state table
+  `removed`) and removed `registry.prune_removed_after` (7d) later: all its tags are untagged (a tag
+  belongs to the flavor in its name; other tags are the alias of the flavor of that name), its state is
+  forgotten and a GC is queued, which also deletes the then empty repository (the catalog would list
+  it for ever otherwise). Coming back into the config clears the record. A config with no containers is
+  never trusted for this. `prebake purge` (POST /purge) removes now, but refuses what is still configured.
 - Blob GC runs while holding the build lock; external writes are impossible and
   the daemon serializes its own pushes, so it is safe. GC runs in a slot.
 
@@ -302,6 +309,8 @@ Status listener (default `:8080`, read-only except trigger, no auth):
 - `GET /` HTML overview, `GET /status` JSON (per container/flavor: last
   rebuild/refresh, next due, state: ok / queued / building / retrying / parked /
   skipped / degraded, digest, last error).
+- `POST /purge/<container>[/<flavor>][?dry_run=1]`: remove the images of what is no longer in the config now
+  (409 for anything still configured); executed by the next scheduler pass.
 - `POST /sync[?commit=<sha>][&branch=<name>]`: fetch, validate and activate now (serialized with the poll loop)
   and answer with the repo state; with `commit` it also says whether that commit is part of the followed
   branch yet, so a client that has just pushed asks again until it is; another `branch` is ignored.

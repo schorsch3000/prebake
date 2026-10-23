@@ -18,17 +18,20 @@ import (
 )
 
 type fakeBackend struct {
-	status    daemon.Status
-	triggered []string
-	err       error
-	also      []string
-	gcs       int
-	syncCalls []string
-	syncRes   daemon.SyncResult
-	syncErr   error
-	logCalls  []string
-	logErr    error
-	logStream daemon.LogStream
+	status     daemon.Status
+	triggered  []string
+	err        error
+	also       []string
+	gcs        int
+	syncCalls  []string
+	syncRes    daemon.SyncResult
+	syncErr    error
+	purgeCalls []string
+	purgeKeys  []schedule.Key
+	purgeErr   error
+	logCalls   []string
+	logErr     error
+	logStream  daemon.LogStream
 }
 
 func (f *fakeBackend) Status() daemon.Status { return f.status }
@@ -37,6 +40,11 @@ func (f *fakeBackend) Trigger(c, fl string, k schedule.Kind) ([]string, error) {
 	return f.also, f.err
 }
 func (f *fakeBackend) RequestGC() { f.gcs++ }
+
+func (f *fakeBackend) Purge(_ context.Context, c, fl string, dry bool) ([]schedule.Key, error) {
+	f.purgeCalls = append(f.purgeCalls, fmt.Sprintf("%s/%s/dry=%v", c, fl, dry))
+	return f.purgeKeys, f.purgeErr
+}
 
 func (f *fakeBackend) SyncNow(_ context.Context, commit, branch string) (daemon.SyncResult, error) {
 	f.syncCalls = append(f.syncCalls, commit+"@"+branch)
@@ -88,6 +96,7 @@ func fixture() *fakeBackend {
 				NextKind: schedule.Refresh, NextRun: t0.Add(24 * time.Hour)},
 			{Key: schedule.Key{Container: "child", Flavor: "cuda"}, State: "parked", Error: "apt <exploded>", Needs: "never built"},
 		},
+		Orphans: []daemon.Orphan{{Key: schedule.Key{Container: "old", Flavor: "default"}, Since: t0.Add(-48 * time.Hour), RemoveAt: t0.Add(120 * time.Hour), Tags: []string{"latest", "default-20261001-020000"}}},
 	}}
 }
 
@@ -418,5 +427,58 @@ func TestSyncEndpoint(t *testing.T) {
 	b.syncErr = nil
 	if code, _ := post(t, srv.URL+"/sync", map[string]string{"Origin": "http://evil.example"}); code != 403 {
 		t.Errorf("cross-origin: %d", code)
+	}
+}
+
+func TestStatusListsOrphans(t *testing.T) {
+	srv := serve(t, fixture())
+	_, body, _ := get(t, srv.URL+"/status")
+	var dto StatusDTO
+	if err := json.Unmarshal([]byte(body), &dto); err != nil {
+		t.Fatal(err)
+	}
+	if len(dto.Orphans) != 1 {
+		t.Fatalf("%+v", dto.Orphans)
+	}
+	o := dto.Orphans[0]
+	if o.Container != "old" || o.Flavor != "default" || len(o.Tags) != 2 || o.Since == nil || o.RemoveAt == nil || !o.RemoveAt.Equal(t0.Add(120*time.Hour)) {
+		t.Errorf("%+v", o)
+	}
+	// none: the field is absent, not null
+	_, body, _ = get(t, serve(t, &fakeBackend{}).URL+"/status")
+	if strings.Contains(body, "orphans") {
+		t.Errorf("no orphans, no field:\n%s", body)
+	}
+}
+
+func TestPurgeEndpoint(t *testing.T) {
+	b := fixture()
+	b.purgeKeys = []schedule.Key{{Container: "old", Flavor: "default"}}
+	srv := serve(t, b)
+	code, body := post(t, srv.URL+"/purge/old?dry_run=1", nil)
+	if code != 200 || !strings.Contains(body, `"dry_run"`) || !strings.Contains(body, "old:default") {
+		t.Errorf("dry run: %d %s", code, body)
+	}
+	code, body = post(t, srv.URL+"/purge/old/default", nil)
+	if code != 202 || !strings.Contains(body, `"queued"`) || !strings.Contains(body, "old:default") {
+		t.Errorf("purge: %d %s", code, body)
+	}
+	if strings.Join(b.purgeCalls, ",") != "old//dry=true,old/default/dry=false" {
+		t.Errorf("calls = %v", b.purgeCalls)
+	}
+	for err, want := range map[error]int{
+		fmt.Errorf("%w: x", daemon.ErrNotFound): 404, fmt.Errorf("%w: still in the config", daemon.ErrConflict): 409,
+		daemon.ErrNotReady: 503, errors.New("boom"): 500,
+	} {
+		b.purgeErr = err
+		if code, _ := post(t, srv.URL+"/purge/old", nil); code != want {
+			t.Errorf("%v: got %d want %d", err, code, want)
+		}
+	}
+	if code, _, _ := get(t, srv.URL+"/purge/old"); code != 405 {
+		t.Errorf("GET /purge: %d", code)
+	}
+	if code, _ := post(t, srv.URL+"/purge/old", map[string]string{"Origin": "http://evil.example"}); code != 403 {
+		t.Errorf("cross-origin purge must be refused: %d", code)
 	}
 }

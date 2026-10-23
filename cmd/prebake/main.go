@@ -62,6 +62,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdDaemon(args[1:], stdout, stderr)
 	case "status":
 		return cmdStatus(args[1:], stdout, stderr)
+	case "purge":
+		return cmdPurge(args[1:], stdout, stderr)
 	case "sync":
 		return cmdSync(args[1:], stdout, stderr)
 	case "logs":

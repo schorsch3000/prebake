@@ -7,9 +7,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/distribution/distribution/v3"
 	"github.com/distribution/distribution/v3/registry/storage"
 	"github.com/distribution/distribution/v3/registry/storage/driver"
 	"github.com/distribution/distribution/v3/registry/storage/driver/factory"
+	"github.com/distribution/reference"
 
 	"github.com/schorsch3000/prebake/internal/retention"
 )
@@ -122,5 +124,51 @@ func GC(ctx context.Context, dir string) error {
 	if errors.As(err, &nf) || (err != nil && strings.Contains(err.Error(), "Path not found") && strings.Contains(err.Error(), "/repositories")) {
 		return nil // nothing was ever pushed: nothing to collect
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return removeEmptyRepositories(ctx, drv, reg)
+}
+
+const repositoriesRoot = "/docker/registry/v2/repositories"
+
+// removeEmptyRepositories deletes the repositories that have no tag left. The sweep above removes
+// their manifests and blobs but leaves the empty repository in the catalog for ever, so a
+// container that was removed from the config would still be listed. Nothing pushes while this
+// runs (the caller holds the build lock), so a repository without tags is really empty.
+func removeEmptyRepositories(ctx context.Context, drv driver.StorageDriver, reg distribution.Namespace) error {
+	enum, ok := reg.(distribution.RepositoryEnumerator)
+	if !ok {
+		return errors.New("registry cannot enumerate repositories")
+	}
+	var empty []string
+	err := enum.Enumerate(ctx, func(name string) error {
+		named, err := reference.WithName(name)
+		if err != nil {
+			return nil // not a repository name we could have created
+		}
+		repo, err := reg.Repository(ctx, named)
+		if err != nil {
+			return err
+		}
+		tags, err := repo.Tags(ctx).All(ctx)
+		var unknown distribution.ErrRepositoryUnknown
+		if err != nil && !errors.As(err, &unknown) {
+			return err
+		}
+		if len(tags) == 0 {
+			empty = append(empty, name)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, name := range empty {
+		if err := drv.Delete(ctx, repositoriesRoot+"/"+name); err != nil {
+			errs = append(errs, fmt.Errorf("remove empty repository %s: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
 }

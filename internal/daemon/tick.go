@@ -150,6 +150,7 @@ func (d *Daemon) Tick(ctx context.Context) {
 		return
 	}
 	d.queue.SetRetryDelay(repo.Global.RetryDelay.Std())
+	d.runPurges(ctx, repo)
 	urgent := map[schedule.Key]bool{}
 	cands := d.candidates(ctx, repo, d.now())
 	d.setNeeds(cands)
@@ -172,11 +173,13 @@ func (d *Daemon) Tick(ctx context.Context) {
 		d.runJob(ctx, repo, job)
 	}
 	d.setNeeds(d.candidates(ctx, repo, d.now())) // what is still needed after this pass
+	d.reconcileRemoved(ctx, repo, false)
 	d.maybeGC(ctx, repo)
 }
 
 // Errors returned by Trigger, for mapping to API status codes.
 var (
+	ErrConflict = errors.New("conflict")
 	ErrNotReady = errors.New("no config repo loaded yet")
 	ErrNotFound = errors.New("not found")
 	ErrInvalid  = errors.New("invalid request")
@@ -443,7 +446,9 @@ type JobStatus struct {
 // Status is a snapshot for the status page and `prebake status`.
 type Status struct {
 	Repo RepoStatus
-	Jobs []JobStatus
+	// Orphans are images of containers and flavors that are no longer in the config.
+	Orphans []Orphan
+	Jobs    []JobStatus
 }
 
 func (d *Daemon) Status() Status {
@@ -458,6 +463,7 @@ func (d *Daemon) Status() Status {
 	for k, v := range d.running {
 		running[k] = v
 	}
+	st.Orphans = append([]Orphan(nil), d.orphans...)
 	needs := make(map[schedule.Key]candidate, len(d.needs))
 	for k, v := range d.needs {
 		needs[k] = v

@@ -232,3 +232,14 @@ func TestLoadRepoComputesInputsHashes(t *testing.T) {
 		t.Errorf("hashes: %q %q", a, b)
 	}
 }
+
+func TestPruneRemovedDefaultsAndOverrides(t *testing.T) {
+	g, err := ParseGlobal("g.yaml", nil)
+	if err != nil || !*g.Registry.PruneRemoved || g.Registry.PruneRemovedAfter.Std() != 7*24*time.Hour {
+		t.Fatalf("defaults: %+v %v", g.Registry, err)
+	}
+	g, err = ParseGlobal("g.yaml", []byte("registry:\n  prune_removed: false\n  prune_removed_after: 12h\n"))
+	if err != nil || *g.Registry.PruneRemoved || g.Registry.PruneRemovedAfter.Std() != 12*time.Hour {
+		t.Errorf("overrides: %+v %v", g.Registry, err)
+	}
+}

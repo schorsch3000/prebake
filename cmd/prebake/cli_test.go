@@ -53,7 +53,7 @@ func TestCommandTableFlagsExist(t *testing.T) {
 	safe := map[string][]string{
 		"status": {"--url", "http://127.0.0.1:1"}, "dry-run": {"--url", "http://127.0.0.1:1"},
 		"trigger": {"--url", "http://127.0.0.1:1", "x"}, "logs": {"--url", "http://127.0.0.1:1", "x"}, "gc": {"--url", "http://127.0.0.1:1"},
-		"validate": {"--repo", tmp}, "install-hook": {"--repo", tmp}, "sync": {"--url", "http://127.0.0.1:1"}, "show-key": {"--data-dir", tmp},
+		"validate": {"--repo", tmp}, "install-hook": {"--repo", tmp}, "sync": {"--url", "http://127.0.0.1:1"}, "purge": {"--url", "http://127.0.0.1:1", "x"}, "show-key": {"--data-dir", tmp},
 	}
 	for _, c := range commands {
 		base, ok := safe[c.Name]
@@ -488,7 +488,7 @@ func TestStatusDemoFileRendersEveryState(t *testing.T) {
 		t.Fatalf("%d %s", code, e)
 	}
 	for _, want := range []string{"repo: degraded", "idle", "building 3m12s", "queued", "retrying", "parked", "skipped", "never", "CET +01:00",
-		"NEEDS", "build inputs changed in git", "rebuild interval over"} {
+		"NEEDS", "build inputs changed in git", "rebuild interval over", "no longer in the config", "old-tools:default"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status lacks %q:\n%s", want, out)
 		}
@@ -580,5 +580,92 @@ func TestNeedsColumnInStatusAndWhyInDryRun(t *testing.T) {
 	_, colored, _ := runCLI(t, "status", "--color", "always", "--url", srv.URL)
 	if !strings.Contains(colored, ansiYellow+"never built") {
 		t.Error("needs is yellow")
+	}
+}
+
+const orphanJSON = `{"generated_at":"2026-10-25T12:00:00Z","repo":{"state":"ok"},"jobs":[
+ {"container":"base","flavor":"default","state":"idle"}],
+ "orphans":[
+  {"container":"dev","flavor":"default","since":"2026-10-23T12:00:00Z","remove_at":"2026-10-30T12:00:00Z","tags":["latest","default-20261023-133530"]},
+  {"container":"gpu","flavor":"cuda","since":"2026-10-24T12:00:00Z","tags":["cuda"]}]}`
+
+func TestStatusAndDryRunListOrphans(t *testing.T) {
+	srv, _ := statusServer(t, orphanJSON)
+	for _, cmd := range []string{"status", "dry-run"} {
+		_, out, _ := runCLI(t, cmd, "--color", "never", "--url", srv.URL)
+		for _, want := range []string{"no longer in the config", "prebake purge", "dev:default", "2026-10-30 12:00", "gpu:cuda", "kept (pruning is off)"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s lacks %q:\n%s", cmd, want, out)
+			}
+		}
+	}
+	// without orphans nothing is printed
+	srv2, _ := statusServer(t, `{"generated_at":"2026-10-25T12:00:00Z","repo":{"state":"ok"},"jobs":[]}`)
+	if _, out, _ := runCLI(t, "status", "--color", "never", "--url", srv2.URL); strings.Contains(out, "no longer in the config") {
+		t.Errorf("no orphans:\n%s", out)
+	}
+	_, colored, _ := runCLI(t, "status", "--color", "always", "--url", srv.URL)
+	_, plain, _ := runCLI(t, "status", "--color", "never", "--url", srv.URL)
+	if stripANSI(colored) != plain || colored == plain {
+		t.Error("colors must not disturb the orphans table")
+	}
+}
+
+func TestCompleteOrphans(t *testing.T) {
+	srv, _ := statusServer(t, orphanJSON)
+	_, out, _ := runCLI(t, "__complete", "orphans", "--url", srv.URL)
+	if got := strings.Join(strings.Fields(out), ","); got != "dev,dev:default,gpu,gpu:cuda" {
+		t.Errorf("orphans = %s", got)
+	}
+	_, out, _ = runCLI(t, "__complete", "containers", "--url", srv.URL)
+	if got := strings.Join(strings.Fields(out), ","); got != "base,base:default" {
+		t.Errorf("containers must not include orphans = %s", got)
+	}
+}
+
+func TestPurgeCommand(t *testing.T) {
+	var reqs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs = append(reqs, r.Method+" "+r.URL.RequestURI())
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/purge/base"):
+			w.WriteHeader(409)
+			w.Write([]byte(`{"error":"conflict: base:default is still in the config; remove it there first"}`))
+		case strings.HasPrefix(r.URL.Path, "/purge/ghost"):
+			w.WriteHeader(404)
+			w.Write([]byte(`{"error":"not found: nothing is stored for \"ghost\""}`))
+		case r.URL.Query().Get("dry_run") == "1":
+			w.Write([]byte(`{"dry_run":"purge","keys":["dev:default","dev:gpu"]}`))
+		default:
+			w.WriteHeader(202)
+			w.Write([]byte(`{"queued":"purge","keys":["dev:default","dev:gpu"]}`))
+		}
+	}))
+	defer srv.Close()
+	code, out, e := runCLI(t, "purge", "dev", "--url", srv.URL)
+	if code != 0 || !strings.Contains(out, "would remove all images of: dev:default, dev:gpu") || !strings.Contains(out, "--yes") {
+		t.Fatalf("without --yes only the plan: %d %q %q", code, out, e)
+	}
+	code, out, e = runCLI(t, "purge", "dev:gpu", "--yes", "--url", srv.URL)
+	if code != 0 || !strings.Contains(out, "removing all images of") || !strings.Contains(out, "garbage collection") {
+		t.Fatalf("%d %q %q", code, out, e)
+	}
+	want := []string{"POST /purge/dev?dry_run=1", "POST /purge/dev/gpu"}
+	if strings.Join(reqs, " | ") != strings.Join(want, " | ") {
+		t.Errorf("requests = %v", reqs)
+	}
+	if code, _, e := runCLI(t, "purge", "base", "--yes", "--url", srv.URL); code != 1 || !strings.Contains(e, "still in the config") {
+		t.Errorf("a container in the config is refused: %d %q", code, e)
+	}
+	if code, _, e := runCLI(t, "purge", "ghost", "--url", srv.URL); code != 1 || !strings.Contains(e, "404") {
+		t.Errorf("%d %q", code, e)
+	}
+	for _, args := range [][]string{{"purge"}, {"purge", "a", "b"}} {
+		if code, _, _ := runCLI(t, append(args, "--url", srv.URL)...); code != 2 {
+			t.Errorf("%v: want 2, got %d", args, code)
+		}
+	}
+	if code, _, _ := runCLI(t, "purge", "dev", "--url", "http://127.0.0.1:1"); code != 2 {
+		t.Error("unreachable must be exit 2")
 	}
 }

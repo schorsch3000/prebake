@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/schorsch3000/prebake/internal/build"
+	"github.com/schorsch3000/prebake/internal/config"
 	"github.com/schorsch3000/prebake/internal/gitsync"
 	"github.com/schorsch3000/prebake/internal/notify"
 	"github.com/schorsch3000/prebake/internal/schedule"
@@ -63,17 +65,50 @@ func (f *fakeBuilder) take() []string {
 }
 
 type fakeRegistry struct {
-	mu      sync.Mutex
-	pruned  []string // "<repo> keep=N"
-	gcs     int
-	removed map[string][]string
-	tags    map[string][]string
+	mu       sync.Mutex
+	pruned   []string // "<repo> keep=N"
+	gcs      int
+	removed  map[string][]string
+	tags     map[string][]string
+	untagged []string
 }
 
 func (r *fakeRegistry) addTag(repo, tag string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for _, t := range r.tags[repo] {
+		if t == tag { // a tag exists once, like in a real registry
+			return
+		}
+	}
 	r.tags[repo] = append(r.tags[repo], tag)
+}
+
+func (r *fakeRegistry) Repositories(context.Context) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var repos []string
+	for name, tags := range r.tags {
+		if len(tags) > 0 {
+			repos = append(repos, name)
+		}
+	}
+	sort.Strings(repos)
+	return repos, nil
+}
+
+func (r *fakeRegistry) Untag(_ context.Context, repo, tag string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var keep []string
+	for _, t := range r.tags[repo] {
+		if t != tag {
+			keep = append(keep, t)
+		}
+	}
+	r.tags[repo] = keep
+	r.untagged = append(r.untagged, repo+":"+tag)
+	return nil
 }
 
 func (r *fakeRegistry) Tags(_ context.Context, repo string) ([]string, error) {
@@ -1211,5 +1246,242 @@ func TestStatusExplainsAnEarlyStartInTheSlot(t *testing.T) {
 	h.tick()
 	if got, _ := needsOf(h.d.Status(), "base:default"); got == "" {
 		t.Errorf("in the slot the pending refresh must be explained")
+	}
+}
+
+// --- containers that are no longer in the config -------------------------------------------
+
+func (h *harness) removeContainer(name string) {
+	h.t.Helper()
+	sh(h.t, h.work, "rm", "-q", "-r", "-f", "containers/"+name)
+	sh(h.t, h.work, "commit", "-q", "-m", "remove "+name)
+	sh(h.t, h.work, "push", "-q", "origin", "HEAD:main")
+}
+
+func (h *harness) tagsOf(repo string) []string {
+	t, _ := h.reg.Tags(context.Background(), repo)
+	sort.Strings(t)
+	return t
+}
+
+func orphanOf(s Status, key string) (Orphan, bool) {
+	for _, o := range s.Orphans {
+		if o.Key.String() == key {
+			return o, true
+		}
+	}
+	return Orphan{}, false
+}
+
+func TestRemovedContainerIsKeptForTheGracePeriodThenRemoved(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	h.tick() // base and child built, tagged, pruned
+	h.b.take()
+	if got := h.tagsOf("child"); len(got) != 1 || got[0] != "latest" {
+		t.Fatalf("setup: %v", got)
+	}
+	h.removeContainer("child")
+	h.sync()
+	h.clk.advance(10 * time.Minute)
+	h.tick()
+	o, ok := orphanOf(h.d.Status(), "child:default")
+	if !ok || !o.Since.Equal(h.clk.now()) || !o.RemoveAt.Equal(h.clk.now().Add(7*24*time.Hour)) || len(o.Tags) != 1 {
+		t.Fatalf("the removed container is listed with its deadline: %+v %v", o, ok)
+	}
+	if len(h.tagsOf("child")) != 1 {
+		t.Error("nothing is removed during the grace period")
+	}
+	if _, ok := orphanOf(h.d.Status(), "base:default"); ok {
+		t.Error("base is still in the config")
+	}
+
+	h.clk.advance(6 * 24 * time.Hour) // day 6: still within the grace period
+	h.tick()
+	if len(h.tagsOf("child")) != 1 {
+		t.Error("kept on day 6")
+	}
+	gcs := h.reg.gcs
+	h.clk.advance(25 * time.Hour) // past day 7
+	h.tick()
+	if got := h.tagsOf("child"); len(got) != 0 {
+		t.Errorf("removed after the grace period: %v", got)
+	}
+	if _, ok := orphanOf(h.d.Status(), "child:default"); ok {
+		t.Error("no longer an orphan once removed")
+	}
+	if got := h.tagsOf("base"); len(got) != 1 {
+		t.Errorf("base untouched: %v", got)
+	}
+	if h.reg.gcs <= gcs {
+		t.Error("the space is reclaimed by a garbage collection")
+	}
+	if img, _ := h.store.ImageState("child", "default"); !img.LastRebuild.IsZero() {
+		t.Errorf("its state is forgotten too: %+v", img)
+	}
+	if rem, _ := h.store.Removed(); len(rem) != 0 {
+		t.Errorf("record removed: %v", rem)
+	}
+}
+
+func TestReturningContainerIsNotRemoved(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	h.tick()
+	h.b.take()
+	h.removeContainer("child")
+	h.sync()
+	h.clk.advance(10 * time.Minute)
+	h.tick()
+	if _, ok := orphanOf(h.d.Status(), "child:default"); !ok {
+		t.Fatal("setup: orphan expected")
+	}
+	// the removal is reverted within the grace period
+	sh(t, h.work, "revert", "--no-edit", "HEAD")
+	sh(t, h.work, "push", "-q", "origin", "HEAD:main")
+	h.sync()
+	h.clk.advance(10 * time.Minute)
+	h.tick()
+	if _, ok := orphanOf(h.d.Status(), "child:default"); ok {
+		t.Error("back in the config: no longer an orphan")
+	}
+	if rem, _ := h.store.Removed(); len(rem) != 0 {
+		t.Errorf("the record must be cleared: %v", rem)
+	}
+	h.clk.advance(30 * 24 * time.Hour)
+	h.tick()
+	if len(h.tagsOf("child")) == 0 {
+		t.Error("the images of a returned container must stay")
+	}
+}
+
+func TestRemovedFlavorOnlyLosesItsOwnTags(t *testing.T) {
+	h := newHarness(t)
+	h.push("flavors", map[string]string{
+		"containers/gpu/Dockerfile":     "FROM debian\n",
+		"containers/gpu/container.yaml": "flavors:\n  default: {}\n  cuda: {}\n",
+	})
+	h.sync()
+	h.tick()
+	h.b.take()
+	h.reg.addTag("gpu", "default-20261001-020000")
+	h.reg.addTag("gpu", "cuda-20261001-020000")
+	h.push("drop cuda", map[string]string{"containers/gpu/container.yaml": "flavors:\n  default: {}\n"})
+	h.sync()
+	h.clk.advance(10 * time.Minute)
+	h.tick()
+	if o, ok := orphanOf(h.d.Status(), "gpu:cuda"); !ok || len(o.Tags) != 2 {
+		t.Fatalf("the dropped flavor is an orphan with its alias and its date tag: %+v %v", o, ok)
+	}
+	h.clk.advance(8 * 24 * time.Hour)
+	h.tick()
+	got := h.tagsOf("gpu")
+	if strings.Join(got, ",") != "default-20261001-020000,latest" {
+		t.Errorf("only the cuda tags are gone: %v", got)
+	}
+}
+
+func TestPruneRemovedCanBeSwitchedOff(t *testing.T) {
+	h := newHarness(t)
+	h.push("keep removed", map[string]string{"prebake.yaml": strings.Replace(globalYAML, "gc_slot_only: true", "gc_slot_only: true\n  prune_removed: false", 1)})
+	h.sync()
+	h.tick()
+	h.b.take()
+	h.removeContainer("child")
+	h.sync()
+	h.clk.advance(10 * time.Minute)
+	h.tick()
+	h.clk.advance(60 * 24 * time.Hour)
+	h.tick()
+	o, ok := orphanOf(h.d.Status(), "child:default")
+	if !ok || !o.RemoveAt.IsZero() || len(h.tagsOf("child")) != 1 {
+		t.Errorf("with pruning off it is listed, with no deadline, and kept: %+v %v %v", o, ok, h.tagsOf("child"))
+	}
+}
+
+func TestAnUnknownTagInAManagedRepositoryIsAnOrphanToo(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	h.tick()
+	h.b.take()
+	h.reg.addTag("base", "pushed-by-hand")
+	h.clk.advance(10 * time.Minute)
+	h.tick()
+	if o, ok := orphanOf(h.d.Status(), "base:pushed-by-hand"); !ok || len(o.Tags) != 1 {
+		t.Errorf("%+v %v", o, ok)
+	}
+}
+
+func TestAnEmptyConfigNeverRemovesAnything(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	h.tick()
+	h.b.take()
+	empty := &config.Repo{Containers: map[string]*config.Container{}, Global: h.d.repo.Global}
+	h.clk.advance(30 * 24 * time.Hour)
+	h.d.reconcileRemoved(context.Background(), empty, true)
+	h.clk.advance(30 * 24 * time.Hour)
+	h.d.reconcileRemoved(context.Background(), empty, true)
+	if len(h.tagsOf("base")) == 0 || len(h.tagsOf("child")) == 0 {
+		t.Error("a config without containers is a mistake, not a wish")
+	}
+}
+
+func TestPurge(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	h.tick()
+	h.b.take()
+	ctx := context.Background()
+	if _, err := h.d.Purge(ctx, "base", "", false); !errors.Is(err, ErrConflict) {
+		t.Errorf("a container in the config must not be purged: %v", err)
+	}
+	if _, err := h.d.Purge(ctx, "ghost", "", false); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown: %v", err)
+	}
+	h.removeContainer("child")
+	h.sync()
+	// a dry run reports and changes nothing
+	plan, err := h.d.Purge(ctx, "child", "", true)
+	if err != nil || len(plan) != 1 {
+		t.Fatalf("dry run: %v %v", plan, err)
+	}
+	h.clk.advance(time.Minute)
+	h.tick()
+	if len(h.tagsOf("child")) != 1 {
+		t.Fatal("a dry run must not remove anything")
+	}
+	plan, err = h.d.Purge(ctx, "child", "", false)
+	if err != nil || len(plan) != 1 || plan[0].String() != "child:default" {
+		t.Fatalf("%v %v", plan, err)
+	}
+	if len(h.tagsOf("child")) != 1 {
+		t.Error("the purge happens in the scheduler pass, not in the request")
+	}
+	h.clk.advance(time.Minute) // far inside the grace period
+	h.tick()
+	if got := h.tagsOf("child"); len(got) != 0 {
+		t.Errorf("purged at once: %v", got)
+	}
+	if h.reg.gcs == 0 {
+		t.Error("a purge frees the space")
+	}
+	if len(h.tagsOf("base")) == 0 {
+		t.Error("base untouched")
+	}
+	// a flavor that does not exist
+	if _, err := h.d.Purge(ctx, "child", "gpu", false); !errors.Is(err, ErrNotFound) {
+		t.Errorf("nothing left: %v", err)
+	}
+}
+
+func TestFlavorOfTag(t *testing.T) {
+	for tag, want := range map[string]string{
+		"latest": "default", "cuda": "cuda", "default-20261001-020000": "default",
+		"cuda-12-dev-20261001-020000": "cuda-12-dev", "weird": "weird",
+	} {
+		if got := flavorOfTag(tag); got != want {
+			t.Errorf("%q: %q, want %q", tag, got, want)
+		}
 	}
 }

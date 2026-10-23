@@ -23,6 +23,8 @@ type Backend interface {
 	Status() daemon.Status
 	Trigger(container, flavor string, kind schedule.Kind) (alsoQueued []string, err error)
 	RequestGC()
+	// Purge removes the images of what is no longer in the config now (see daemon.Daemon.Purge).
+	Purge(ctx context.Context, container, flavor string, dryRun bool) ([]schedule.Key, error)
 	// SyncNow fetches the config repo now (see daemon.Daemon.SyncNow).
 	SyncNow(ctx context.Context, commit, branch string) (daemon.SyncResult, error)
 	// Logs returns the build output of a container flavor (see daemon.Daemon.Logs).
@@ -38,6 +40,15 @@ type Info struct {
 	Fingerprint string
 }
 
+// OrphanDTO is a container flavor that is no longer in the config but still has images.
+type OrphanDTO struct {
+	Container string     `json:"container"`
+	Flavor    string     `json:"flavor"`
+	Since     *time.Time `json:"since,omitempty"`     // first seen missing from the config
+	RemoveAt  *time.Time `json:"remove_at,omitempty"` // absent when pruning is switched off
+	Tags      []string   `json:"tags,omitempty"`
+}
+
 // StatusDTO is the JSON document of GET /status.
 type StatusDTO struct {
 	GeneratedAt time.Time `json:"generated_at"`
@@ -48,6 +59,8 @@ type StatusDTO struct {
 	TimeZone string   `json:"time_zone"`
 	Repo     RepoDTO  `json:"repo"`
 	Jobs     []JobDTO `json:"jobs"`
+	// Orphans are images of containers and flavors that are no longer in the config.
+	Orphans []OrphanDTO `json:"orphans,omitempty"`
 }
 
 type RepoDTO struct {
@@ -91,6 +104,10 @@ func ToDTO(s daemon.Status, now time.Time) StatusDTO {
 		State: string(s.Repo.State), Head: s.Repo.Head, Active: s.Repo.Active, Error: s.Repo.Error,
 		LastFetch: tp(s.Repo.LastFetch), LastChanged: tp(s.Repo.LastChanged),
 	}}
+	for _, o := range s.Orphans {
+		out.Orphans = append(out.Orphans, OrphanDTO{Container: o.Key.Container, Flavor: o.Key.Flavor,
+			Since: tp(o.Since), RemoveAt: tp(o.RemoveAt), Tags: o.Tags})
+	}
 	for _, j := range s.Jobs {
 		d := JobDTO{
 			Container: j.Key.Container, Flavor: j.Key.Flavor, State: j.State, Error: j.Error, LastRun: j.LastRun,
@@ -120,6 +137,8 @@ func Handler(b Backend, key Info, now func() time.Time) http.Handler {
 	mux.HandleFunc("POST /trigger/{container}/{flavor}", s.trigger)
 	mux.HandleFunc("POST /gc", s.gc)
 	mux.HandleFunc("POST /sync", s.sync)
+	mux.HandleFunc("POST /purge/{container}", s.purge)
+	mux.HandleFunc("POST /purge/{container}/{flavor}", s.purge)
 	mux.HandleFunc("GET /logs/{container}", s.logs)
 	mux.HandleFunc("GET /logs/{container}/{flavor}", s.logs)
 	return sameOrigin(mux)
@@ -210,6 +229,35 @@ func flavorOrDefault(f string) string {
 		return "default"
 	}
 	return f
+}
+
+// purge removes the images of a container (or flavor) that is no longer in the config, now instead
+// of after the grace period: POST /purge/<container>[/<flavor>][?dry_run=1].
+func (s *server) purge(w http.ResponseWriter, r *http.Request) {
+	dry := r.URL.Query().Get("dry_run") == "1"
+	keys, err := s.b.Purge(r.Context(), r.PathValue("container"), r.PathValue("flavor"), dry)
+	if err != nil {
+		code := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, daemon.ErrNotFound):
+			code = http.StatusNotFound
+		case errors.Is(err, daemon.ErrConflict):
+			code = http.StatusConflict
+		case errors.Is(err, daemon.ErrNotReady):
+			code = http.StatusServiceUnavailable
+		}
+		writeJSON(w, code, map[string]string{"error": err.Error()})
+		return
+	}
+	names := make([]string, 0, len(keys))
+	for _, k := range keys {
+		names = append(names, k.String())
+	}
+	status, word := http.StatusAccepted, "queued"
+	if dry {
+		status, word = http.StatusOK, "dry_run"
+	}
+	writeJSON(w, status, map[string]any{word: "purge", "keys": names})
 }
 
 // sync fetches the config repo now: POST /sync[?commit=<sha>][&branch=<name>]. It answers when the
