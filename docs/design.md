@@ -318,6 +318,6 @@ parked/retry state. Logs go to stdout; build logs are kept per job (bounded).
 
 ## 18. Open points
 
-- Exact embedding API of `distribution/distribution` needs a spike (M4).
+- Embedding `distribution/distribution` verified, see docs/spikes/m4-registry-embedding.md; pin the version.
 - Timezone for slots: host `TZ`; make explicit in config if needed.
 - Disk-pressure-triggered prune: not in v1.
