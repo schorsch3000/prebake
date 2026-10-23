@@ -291,6 +291,12 @@ a version or a digest (`ghcr.io/schorsch3000/prebake:1.2.3`,
 `prebake version` shows what is running. To cut a release: `git tag v0.1.0 && git push origin v0.1.0`.
 That publishes the image tags above and creates a GitHub release with the CLI archives.
 
+The release workflow (`.github/workflows/release.yml`) does not run the tests again. It
+requires that the `ci` workflow passed for exactly the tagged commit (it waits for a ci run that is
+still going, and stops the release if there is none or it failed), and then builds the image and
+the CLI archives in parallel, from the caches of the ci run. So: merge to `main`, tag that commit, and a
+release takes a few minutes.
+
 The first publish creates the package as private. Make it public once (GitHub,
 your profile, Packages, `prebake`, Package settings, Change visibility) or
 `docker compose pull` needs a `docker login ghcr.io`.
@@ -310,6 +316,9 @@ make test-integration      # needs Docker and a registry on localhost:5001
 scripts/ci-e2e.sh          # full compose run against a local repo, needs Docker
 ```
 
-CI (`.github/workflows/ci.yml`) runs unit tests with `-race`, the Docker
-integration tests, the image build, and the compose end-to-end script. Work is
+CI (`.github/workflows/ci.yml`) runs, in parallel, lint and static build, the unit tests with `-race`,
+the Docker integration tests, a dry run of the release archives and the image build, then the
+compose end-to-end script in both modes. The Go build caches and the image layers are cached between
+runs (`.github/actions/go-cache`, the Docker layer cache), and the image is built once and reused by the
+end-to-end jobs and the publish step. Work is
 tracked with [git-bug](https://github.com/git-bug/git-bug) in the repo.

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build the prebake CLI for all release platforms into <outdir> (default dist/):
 # one archive per platform plus checksums.txt. Usage: scripts/build-release.sh <version> [outdir]
-# The archives are reproducible for a given commit (fixed mtimes, sorted, no owner info).
+# The platforms are built concurrently (a CI runner has several cores and the builds are
+# independent). The archives are reproducible for a given commit (fixed mtimes, sorted, no
+# owner info).
 set -euo pipefail
 
 version=${1:?usage: build-release.sh <version> [outdir]}
@@ -17,7 +19,8 @@ out=$(cd "$out" && pwd)   # absolute: the zip step runs in another directory
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 
-for t in "${targets[@]}"; do
+build_one() {
+  local t=$1 os arch name bin
   os=${t%/*}
   arch=${t#*/}
   name=prebake_${version}_${os}_${arch}
@@ -36,7 +39,24 @@ for t in "${targets[@]}"; do
       -czf "$out/$name.tar.gz" "$name"
   fi
   echo "built $name"
+}
+
+# Warm the module cache once, so that the concurrent builds do not all download it.
+go mod download
+
+pids=()
+for t in "${targets[@]}"; do
+  build_one "$t" &
+  pids+=($!)
 done
+failed=0
+for pid in "${pids[@]}"; do
+  wait "$pid" || failed=1
+done
+if [ "$failed" -ne 0 ]; then
+  echo "at least one platform failed to build" >&2
+  exit 1
+fi
 
 (cd "$out" && sha256sum -- * > checksums.txt)
 cat "$out/checksums.txt"

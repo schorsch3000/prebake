@@ -340,7 +340,24 @@ func TestTriggerAndGCCommands(t *testing.T) {
 	}
 }
 
+func TestVersionFromTheEnvironmentOfTheImage(t *testing.T) {
+	// the image sets PREBAKE_VERSION/PREBAKE_REVISION; the linker values (release archives) win
+	t.Setenv("PREBAKE_VERSION", "1.2.3")
+	t.Setenv("PREBAKE_REVISION", "abc123")
+	if _, out, _ := runCLI(t, "version"); out != "prebake 1.2.3 (abc123)\n" {
+		t.Errorf("env fallback: %q", out)
+	}
+	oldV, oldR := version, revision
+	version, revision = "9.9.9", "def456"
+	defer func() { version, revision = oldV, oldR }()
+	if _, out, _ := runCLI(t, "version"); out != "prebake 9.9.9 (def456)\n" {
+		t.Errorf("linker values must win: %q", out)
+	}
+}
+
 func TestVersionCommand(t *testing.T) {
+	t.Setenv("PREBAKE_VERSION", "")
+	t.Setenv("PREBAKE_REVISION", "")
 	for _, arg := range []string{"version", "--version", "-v"} {
 		code, out, _ := runCLI(t, arg)
 		if code != 0 || !strings.HasPrefix(out, "prebake dev (") {

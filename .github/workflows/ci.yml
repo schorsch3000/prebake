@@ -1,9 +1,10 @@
 name: ci
 
+# Branch pushes and pull requests. Releases (tags) are in release.yml: they do not run the
+# tests again, they require that this workflow passed for the tagged commit.
 on:
   push:
     branches: ["**"]
-    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -13,9 +14,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # one image layer cache for the whole run: the image job writes it, the jobs after it read it
+  IMAGE_CACHE: prebake-image
+
 jobs:
-  unit:
-    name: unit tests
+  lint:
+    name: lint and static build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,12 +34,41 @@ jobs:
             echo "gofmt needed:"; echo "$unformatted"; exit 1
           fi
       - run: go vet ./...
-      - run: go test -race -count=1 ./...
+      - run: go vet -tags integration ./...
+      - run: shellcheck scripts/*.sh
       - name: static build (no cgo)
         run: CGO_ENABLED=0 go build -o /dev/null ./cmd/prebake
-      - name: release archives build (dry run)
+
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/go-cache
+        with:
+          name: test
+      - run: go test -race -count=1 ./...
+
+  archives:
+    name: release archives (dry run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/go-cache
+        with:
+          name: archives
+      - name: build the archives for every platform
+        run: scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
+      - name: the linux binary runs
         run: |
-          scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
           tar -xzOf "$RUNNER_TEMP"/dist/prebake_0.0.0-ci_linux_amd64.tar.gz prebake_0.0.0-ci_linux_amd64/prebake > "$RUNNER_TEMP/prebake"
           chmod +x "$RUNNER_TEMP/prebake"
           "$RUNNER_TEMP/prebake" version | grep -q '^prebake 0.0.0-ci '
@@ -72,6 +106,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
       - name: compose files are valid
         run: |
           docker compose -f docker-compose.yaml config -q
@@ -79,10 +114,18 @@ jobs:
           docker compose -f docker-compose.yaml -f docker-compose.build.yaml config -q
         env:
           REPO_URL: git@example.com:me/prebake-config.git
-      - name: build image
-        run: docker compose -f docker-compose.yaml -f docker-compose.build.yaml build
-        env:
-          REPO_URL: git@example.com:me/prebake-config.git
+      - name: build the image (and fill the layer cache for the jobs after this one)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: prebake:local
+          build-args: |
+            VERSION=local
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=${{ env.IMAGE_CACHE }}
+          # ignore-error: pull requests from forks cannot write the cache; that must not fail the build
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE_CACHE }},ignore-error=true
       - name: binary runs in the image
         run: |
           docker run --rm prebake:local --help
@@ -107,19 +150,29 @@ jobs:
             proxy: "1"
     steps:
       - uses: actions/checkout@v4
-      - name: shellcheck
-        run: shellcheck scripts/*.sh
+      - uses: docker/setup-buildx-action@v3
+      - name: the image under test, from the layer cache of the image job
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: prebake:local
+          build-args: |
+            VERSION=local
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=${{ env.IMAGE_CACHE }}
       - name: run the daemon from compose against a local repo
         run: scripts/ci-e2e.sh
         env:
           PREBAKE_PROXY: ${{ matrix.proxy }}
+          PREBAKE_IMAGE_PREBUILT: "1"
 
   publish:
     name: publish image to GHCR
     runs-on: ubuntu-latest
-    needs: [unit, integration, image, e2e]
-    # only for main and release tags, and only when everything above is green
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [lint, test, archives, integration, image, e2e]
+    # only for main, and only when everything above is green
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
@@ -135,13 +188,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-          # main: edge + sha; v1.2.3: 1.2.3, 1.2 and latest
+          # main: edge and the commit; releases are published by release.yml
           tags: |
             type=edge,branch=main
             type=sha,format=short
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
       - id: push
         uses: docker/build-push-action@v6
         with:
@@ -154,32 +204,8 @@ jobs:
             VERSION=${{ steps.meta.outputs.version }}
             REVISION=${{ github.sha }}
           provenance: false
+          cache-from: type=gha,scope=${{ env.IMAGE_CACHE }}
       - name: the published image runs
         run: |
           docker run --rm "ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}" version
           echo "published ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
-
-  release:
-    name: GitHub release with CLI binaries
-    runs-on: ubuntu-latest
-    needs: [unit, integration, image, e2e]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: build archives
-        run: scripts/build-release.sh "$GITHUB_REF_NAME" dist
-      - name: create the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          flags=()
-          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --verify-tag --generate-notes "${flags[@]}" \
-            --title "$GITHUB_REF_NAME" \
-            --notes "Command line tool for validating a config repo and talking to a running daemon (\`validate\`, \`install-hook\`, \`status\`, \`trigger\`, ...). Check the download against \`checksums.txt\`. The daemon itself is the container image \`ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME#v}\`. The macOS and Windows archives are built but not tested by CI."

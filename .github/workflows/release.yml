@@ -1,0 +1,141 @@
+name: release
+
+# Runs for version tags (v1.2.3). It does not run the tests again: it requires that the ci
+# workflow passed for exactly the tagged commit, then builds the image and the CLI archives
+# with the version embedded (both in parallel, from warm caches) and publishes them.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_CACHE: prebake-image
+
+jobs:
+  gate:
+    name: the tagged commit passed ci
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: wait for a successful ci run of this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Tagging right after the push is fine: while ci for this commit is still running we
+          # wait for it (up to 45 minutes). A failed or missing run stops the release.
+          for _ in $(seq 1 135); do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&per_page=30" \
+              --jq '[.workflow_runs[] | .status + ":" + (.conclusion // "")] | join(" ")')
+            case " $runs " in
+              *" completed:success "*)
+                echo "ci passed for $GITHUB_SHA"
+                exit 0 ;;
+            esac
+            case "$runs" in
+              *queued*|*in_progress*|*waiting*|*pending*)
+                echo "ci is still running for $GITHUB_SHA, waiting ..."
+                sleep 20 ;;
+              *)
+                echo "::error title=commit not verified::No successful ci run for $GITHUB_SHA (runs: ${runs:-none}). Tag a commit that is green on main."
+                exit 1 ;;
+            esac
+          done
+          echo "::error title=timeout::ci did not finish for $GITHUB_SHA in time"
+          exit 1
+
+  image:
+    name: publish image to GHCR
+    runs-on: ubuntu-latest
+    needs: gate
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # v1.2.3: 1.2.3, 1.2 and latest; a prerelease (v1.2.3-rc1) gets its own tag only
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+          provenance: false
+          # layers of the ci run for this commit (tags read the caches of the default branch)
+          cache-from: type=gha,scope=${{ env.IMAGE_CACHE }}
+      - name: the published image runs
+        run: |
+          out=$(docker run --rm "ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}" version)
+          echo "$out"
+          echo "$out" | grep -q "^prebake ${{ steps.meta.outputs.version }} "
+          echo "published ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+
+  archives:
+    name: CLI archives
+    runs-on: ubuntu-latest
+    needs: gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/go-cache
+        with:
+          name: archives
+      - name: build the archives for every platform
+        run: scripts/build-release.sh "$GITHUB_REF_NAME" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-archives
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    needs: [image, archives]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-archives
+          path: dist
+      - name: create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          flags=()
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag --generate-notes "${flags[@]}" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Command line tool for validating a config repo and talking to a running daemon (\`validate\`, \`install-hook\`, \`status\`, \`logs\`, \`trigger\`, ...). Check the download against \`checksums.txt\`. The daemon itself is the container image \`ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME#v}\`. The macOS and Windows archives are built but not tested by CI."

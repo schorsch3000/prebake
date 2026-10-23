@@ -6,11 +6,30 @@ import (
 	"os"
 )
 
-// Set at build time: -ldflags "-X main.version=... -X main.revision=...".
+// Set at build time: -ldflags "-X main.version=... -X main.revision=..." (the release archives).
+// The container image is built without them, so that its compile layer is the same for every
+// version; it sets PREBAKE_VERSION and PREBAKE_REVISION instead (see versionInfo).
 var (
 	version  = "dev"
 	revision = "unknown"
 )
+
+// versionInfo returns the version and commit: the linker values win, the PREBAKE_* variables
+// fill in what the linker did not set.
+func versionInfo() (v, r string) {
+	v, r = version, revision
+	if v == "dev" {
+		if e := os.Getenv("PREBAKE_VERSION"); e != "" {
+			v = e
+		}
+	}
+	if r == "unknown" {
+		if e := os.Getenv("PREBAKE_REVISION"); e != "" {
+			r = e
+		}
+	}
+	return v, r
+}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -26,7 +45,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage())
 		return 0
 	case "version", "-v", "--version":
-		fmt.Fprintf(stdout, "prebake %s (%s)\n", version, revision)
+		v, r := versionInfo()
+		fmt.Fprintf(stdout, "prebake %s (%s)\n", v, r)
 		return 0
 	case "completion":
 		return cmdCompletion(args[1:], stdout, stderr)

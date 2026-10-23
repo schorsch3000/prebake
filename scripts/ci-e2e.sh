@@ -69,7 +69,13 @@ git -C "$work/w" add -A
 git -C "$work/w" commit -q -m "ci-demo"
 git -C "$work/w" push -q origin HEAD:main
 
-"${compose[@]}" up -d --build
+# CI builds the image once, with a layer cache, and hands it over (PREBAKE_IMAGE_PREBUILT=1):
+# compose must not rebuild it from scratch. Locally the script builds the image itself.
+if [ "${PREBAKE_IMAGE_PREBUILT:-}" = 1 ]; then
+  "${compose[@]}" up -d
+else
+  "${compose[@]}" up -d --build
+fi
 
 # wait_for <seconds> <description> <command...>
 wait_for() {
