@@ -19,7 +19,7 @@ import (
 // Backend is what the API needs from the daemon.
 type Backend interface {
 	Status() daemon.Status
-	Trigger(container, flavor string, kind schedule.Kind) error
+	Trigger(container, flavor string, kind schedule.Kind) (alsoQueued []string, err error)
 	RequestGC()
 }
 
@@ -156,7 +156,8 @@ func (s *server) trigger(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("kind %q: want rebuild or refresh", k)})
 		return
 	}
-	if err := s.b.Trigger(container, flavor, kind); err != nil {
+	also, err := s.b.Trigger(container, flavor, kind)
+	if err != nil {
 		code := http.StatusInternalServerError
 		switch {
 		case errors.Is(err, daemon.ErrNotFound):
@@ -169,7 +170,12 @@ func (s *server) trigger(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, code, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"queued": kind.String(), "container": container, "flavor": flavorOrDefault(flavor)})
+	resp := map[string]any{"queued": kind.String(), "container": container, "flavor": flavorOrDefault(flavor)}
+	if len(also) > 0 {
+		// parents that were never built: the child needs <parent>:latest, so they go first
+		resp["also_queued"] = also
+	}
+	writeJSON(w, http.StatusAccepted, resp)
 }
 
 func flavorOrDefault(f string) string {

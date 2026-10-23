@@ -272,13 +272,16 @@ func TestStatusCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("%d %s", code, errOut)
 	}
-	for _, want := range []string{"time zone of the build slots: JST +09:00", "repo: degraded  active=aaaaaaa head=bbbbbbb", "containers/x: stray file", "CONTAINER", "parked", "apt exploded", "never"} {
+	for _, want := range []string{"time zone of the build slots: JST +09:00", "repo: degraded  active=aaaaaaa head=bbbbbbb", "containers/x: stray file", "CONTAINER", "parked", "second line", "never"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "second line") {
-		t.Errorf("only the first error line belongs in the table:\n%s", out)
+	if !strings.Contains(out, "second line") || strings.Contains(out, "apt exploded") {
+		t.Errorf("the table shows the LAST error line (docker's reason), not the first:\n%s", out)
+	}
+	if !strings.Contains(out, "+1 lines") {
+		t.Errorf("a multi-line error should say that there is more:\n%s", out)
 	}
 	code, out, _ = runCLI(t, "status", "--json", "--url", srv.URL)
 	var dto struct{ Jobs []map[string]any }

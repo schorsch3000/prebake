@@ -110,16 +110,20 @@ func (d *Daemon) RequestGC() {
 }
 
 // Trigger queues a job right now, bypassing slots, and unparks it.
-func (d *Daemon) Trigger(container, flavor string, kind schedule.Kind) error {
+//
+// Children build FROM <registry>/<parent>:latest, so the transitive parents that were never
+// built are queued as well (also manual); the queue builds them before the child. Their names
+// are returned.
+func (d *Daemon) Trigger(container, flavor string, kind schedule.Kind) (alsoQueued []string, err error) {
 	d.mu.Lock()
 	repo := d.repo
 	d.mu.Unlock()
 	if repo == nil {
-		return ErrNotReady
+		return nil, ErrNotReady
 	}
 	c, ok := repo.Containers[container]
 	if !ok {
-		return fmt.Errorf("%w: unknown container %q", ErrNotFound, container)
+		return nil, fmt.Errorf("%w: unknown container %q", ErrNotFound, container)
 	}
 	if flavor == "" {
 		flavor = config.DefaultFlavor
@@ -129,10 +133,24 @@ func (d *Daemon) Trigger(container, flavor string, kind schedule.Kind) error {
 		known = known || f == flavor
 	}
 	if !known {
-		return fmt.Errorf("%w: container %q has no flavor %q", ErrNotFound, container, flavor)
+		return nil, fmt.Errorf("%w: container %q has no flavor %q", ErrNotFound, container, flavor)
 	}
 	if kind != schedule.Rebuild && kind != schedule.Refresh {
-		return fmt.Errorf("%w: kind must be rebuild or refresh", ErrInvalid)
+		return nil, fmt.Errorf("%w: kind must be rebuild or refresh", ErrInvalid)
+	}
+	for _, parent := range ancestors(repo, container) {
+		pk := schedule.Key{Container: parent, Flavor: config.DefaultFlavor}
+		img, err := d.store.ImageState(pk.Container, pk.Flavor)
+		if err != nil {
+			return nil, err
+		}
+		if img.LastRebuild.IsZero() { // never built: <parent>:latest does not exist yet
+			d.queue.Trigger(pk, schedule.Rebuild)
+			if d.store != nil {
+				d.store.DeleteQueueState(pk)
+			}
+			alsoQueued = append(alsoQueued, parent)
+		}
 	}
 	k := schedule.Key{Container: container, Flavor: flavor}
 	d.queue.Trigger(k, kind)
@@ -140,7 +158,30 @@ func (d *Daemon) Trigger(container, flavor string, kind schedule.Kind) error {
 		d.store.DeleteQueueState(k)
 	}
 	d.Wake()
-	return nil
+	return alsoQueued, nil
+}
+
+// ancestors returns the transitive depends_on targets of name, parents before children.
+func ancestors(repo *config.Repo, name string) []string {
+	var out []string
+	seen := map[string]bool{name: true}
+	var visit func(n string)
+	visit = func(n string) {
+		c := repo.Containers[n]
+		if c == nil {
+			return
+		}
+		for _, p := range c.DependsOn {
+			if seen[p] {
+				continue
+			}
+			seen[p] = true
+			visit(p)
+			out = append(out, p)
+		}
+	}
+	visit(name)
+	return out
 }
 
 func (d *Daemon) runJob(ctx context.Context, repo *config.Repo, job schedule.Job) {

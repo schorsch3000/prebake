@@ -268,7 +268,7 @@ func TestOutsideSlotNothingRunsExceptTrigger(t *testing.T) {
 	if got := h.b.take(); len(got) != 0 {
 		t.Fatalf("builds outside the slot: %v", got)
 	}
-	if err := h.d.Trigger("base", "", schedule.Rebuild); err != nil {
+	if _, err := h.d.Trigger("base", "", schedule.Rebuild); err != nil {
 		t.Fatal(err)
 	}
 	h.tick()
@@ -285,7 +285,7 @@ func TestOutsideSlotNothingRunsExceptTrigger(t *testing.T) {
 
 func TestTriggerValidation(t *testing.T) {
 	h := newHarness(t)
-	if err := h.d.Trigger("base", "", schedule.Rebuild); !errors.Is(err, ErrNotReady) {
+	if _, err := h.d.Trigger("base", "", schedule.Rebuild); !errors.Is(err, ErrNotReady) {
 		t.Errorf("no repo loaded yet: %v", err)
 	}
 	h.sync()
@@ -298,7 +298,7 @@ func TestTriggerValidation(t *testing.T) {
 		{"base", "cuda", schedule.Rebuild, ErrNotFound},
 		{"base", "", schedule.None, ErrInvalid},
 	} {
-		if err := h.d.Trigger(c.container, c.flavor, c.kind); !errors.Is(err, c.want) {
+		if _, err := h.d.Trigger(c.container, c.flavor, c.kind); !errors.Is(err, c.want) {
 			t.Errorf("%+v: got %v, want %v", c, err, c.want)
 		}
 	}
@@ -452,7 +452,7 @@ func TestManualTriggerUnparks(t *testing.T) {
 	h.clk.advance(16 * time.Minute)
 	h.tick()
 	h.b.take()
-	if err := h.d.Trigger("base", "", schedule.Rebuild); err != nil {
+	if _, err := h.d.Trigger("base", "", schedule.Rebuild); err != nil {
 		t.Fatal(err)
 	}
 	h.tick()
@@ -545,5 +545,49 @@ func TestNotificationPriorityDefaults(t *testing.T) {
 	defer h.n.mu.Unlock()
 	if len(h.n.events) != 1 || h.n.events[0].Priority != 1 {
 		t.Errorf("events = %+v", h.n.events)
+	}
+}
+
+func TestTriggerBuildsNeverBuiltParentsFirst(t *testing.T) {
+	h := newHarness(t)
+	h.push("narrow slot", map[string]string{"prebake.yaml": "slots: [\"02:00-04:00\"]\nkeep: 4\n"})
+	h.sync()
+
+	// triggering the child while nothing was ever built: its parent has no <parent>:latest yet,
+	// so it is queued too (ignoring the slot, like the trigger itself) and built first
+	also, err := h.d.Trigger("child", "", schedule.Rebuild)
+	if err != nil || len(also) != 1 || also[0] != "base" {
+		t.Fatalf("also queued = %v, err %v", also, err)
+	}
+	h.tick() // 12:00, outside the slot
+	if got := h.b.take(); len(got) != 2 || got[0] != "base:default rebuild" || got[1] != "child:default rebuild" {
+		t.Fatalf("builds = %v", got)
+	}
+
+	// base is built now: triggering the child alone does not rebuild the parent
+	also, err = h.d.Trigger("child", "", schedule.Refresh)
+	if err != nil || len(also) != 0 {
+		t.Fatalf("also queued = %v, err %v", also, err)
+	}
+	h.tick()
+	if got := h.b.take(); len(got) != 1 || got[0] != "child:default refresh" {
+		t.Errorf("builds = %v", got)
+	}
+}
+
+func TestTriggerParentsAreTransitive(t *testing.T) {
+	h := newHarness(t)
+	h.push("grandchild", map[string]string{
+		"containers/grand/Dockerfile":     "ARG PARENT\nFROM ${PARENT}\n",
+		"containers/grand/container.yaml": "depends_on: [child]\ntests: [\"true\"]\n",
+	})
+	h.sync()
+	also, err := h.d.Trigger("grand", "", schedule.Rebuild)
+	if err != nil || strings.Join(also, ",") != "base,child" {
+		t.Fatalf("also queued = %v, err %v", also, err)
+	}
+	h.tick()
+	if got := strings.Join(h.b.take(), ","); got != "base:default rebuild,child:default rebuild,grand:default rebuild" {
+		t.Errorf("builds = %s", got)
 	}
 }

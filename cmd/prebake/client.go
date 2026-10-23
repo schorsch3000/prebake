@@ -105,8 +105,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "CONTAINER\tFLAVOR\tSTATE\tLAST REBUILD\tLAST REFRESH\tERROR")
 	for _, j := range dto.Jobs {
-		e := strings.SplitN(j.Error, "\n", 2)[0]
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", j.Container, j.Flavor, j.State, fmtTime(j.LastRebuild), fmtTime(j.LastRefresh), short(e, 60))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", j.Container, j.Flavor, j.State, fmtTime(j.LastRebuild), fmtTime(j.LastRefresh), errorSummary(j.Error))
 	}
 	w.Flush()
 	return 0
@@ -225,4 +224,19 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, body)
 	return 0
+}
+
+// errorSummary is the one-line form of a job error for the table. Build errors are the
+// operation first and docker's output after it, and the reason is at the end, so the last
+// line is shown; `status --json` and the web page carry the whole text.
+func errorSummary(e string) string {
+	lines := strings.Split(strings.TrimSpace(e), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if len(lines) > 1 {
+		last += "  (+" + fmt.Sprint(len(lines)-1) + " lines, see status --json)"
+	}
+	if len(last) > 110 {
+		last = last[:107] + "..."
+	}
+	return last
 }

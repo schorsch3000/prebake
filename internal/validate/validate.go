@@ -358,6 +358,14 @@ func (r *Result) strayFiles(fsys fs.FS, dir string, referenced, extra []string) 
 	})
 }
 
+func hasDefaultFlavor(c *config.Container) bool {
+	if len(c.Flavors) == 0 {
+		return true
+	}
+	_, ok := c.Flavors[config.DefaultFlavor]
+	return ok
+}
+
 // dependencies checks depends_on targets and cycles.
 func (r *Result) dependencies(cs []container) {
 	byName := map[string]*container{}
@@ -372,6 +380,9 @@ func (r *Result) dependencies(cs []container) {
 				r.add(Error, file, 0, "depends_on refers to itself")
 			case byName[d] == nil:
 				r.add(Error, file, 0, "depends_on %q: no such container", d)
+			case !hasDefaultFlavor(byName[d].cfg):
+				// children build FROM <registry>/<parent>:latest, which is the default flavor
+				r.add(Error, file, 0, "depends_on %q: it declares flavors but no %q flavor, so %s:latest is never built", d, config.DefaultFlavor, d)
 			}
 		}
 	}

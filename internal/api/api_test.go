@@ -20,13 +20,14 @@ type fakeBackend struct {
 	status    daemon.Status
 	triggered []string
 	err       error
+	also      []string
 	gcs       int
 }
 
 func (f *fakeBackend) Status() daemon.Status { return f.status }
-func (f *fakeBackend) Trigger(c, fl string, k schedule.Kind) error {
+func (f *fakeBackend) Trigger(c, fl string, k schedule.Kind) ([]string, error) {
 	f.triggered = append(f.triggered, fmt.Sprintf("%s/%s/%s", c, fl, k))
-	return f.err
+	return f.also, f.err
 }
 func (f *fakeBackend) RequestGC() { f.gcs++ }
 
@@ -160,6 +161,12 @@ func TestTrigger(t *testing.T) {
 	if code, _ := post(t, srv.URL+"/trigger/child/cuda?kind=refresh", nil); code != 202 {
 		t.Errorf("flavor refresh: %d", code)
 	}
+	b.also = []string{"base"}
+	if code, body := post(t, srv.URL+"/trigger/child", nil); code != 202 || !strings.Contains(body, `"also_queued"`) || !strings.Contains(body, `"base"`) {
+		t.Errorf("parents queued along must be reported: %d %s", code, body)
+	}
+	b.also = nil
+	b.triggered = b.triggered[:2]
 	want := []string{"base//rebuild", "child/cuda/refresh"}
 	if strings.Join(b.triggered, ",") != strings.Join(want, ",") {
 		t.Errorf("triggered = %v", b.triggered)

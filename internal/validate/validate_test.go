@@ -234,3 +234,18 @@ func TestExampleConfigRepoIsValid(t *testing.T) {
 		t.Fatalf("examples/config-repo: %v", r.Issues)
 	}
 }
+
+func TestDependsOnNeedsDefaultFlavor(t *testing.T) {
+	m := base()
+	m["containers/gpu/Dockerfile"] = "FROM debian\n"
+	m["containers/gpu/container.yaml"] = "flavors:\n  cuda: {}\ntests: [\"true\"]\n"
+	m["containers/user/Dockerfile"] = "ARG PARENT\nFROM ${PARENT}\n"
+	m["containers/user/container.yaml"] = "depends_on: [gpu]\ntests: [\"true\"]\n"
+	if r := FS(repo(m)); !has(r, Error, `depends_on "gpu": it declares flavors but no "default" flavor`) {
+		t.Errorf("got %v", r.Issues)
+	}
+	m["containers/gpu/container.yaml"] = "flavors:\n  default: {}\n  cuda: {}\ntests: [\"true\"]\n"
+	if r := FS(repo(m)); r.Errors() != 0 {
+		t.Errorf("a parent with a default flavor is fine: %v", r.Issues)
+	}
+}
