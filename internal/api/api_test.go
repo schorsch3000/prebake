@@ -218,3 +218,21 @@ func TestCrossOriginPostRefused(t *testing.T) {
 		t.Errorf("opaque origin on /gc: %d", code)
 	}
 }
+
+func TestStatusJSONCarriesRunningSince(t *testing.T) {
+	b := fixture()
+	b.status.Jobs[0].State = "building"
+	b.status.Jobs[0].RunningSince = t0.Add(-3 * time.Minute)
+	srv := serve(t, b)
+	_, body, _ := get(t, srv.URL+"/status")
+	var dto StatusDTO
+	if err := json.Unmarshal([]byte(body), &dto); err != nil {
+		t.Fatal(err)
+	}
+	if dto.Jobs[0].RunningSince == nil || !dto.Jobs[0].RunningSince.Equal(t0.Add(-3*time.Minute)) || dto.Jobs[1].RunningSince != nil {
+		t.Errorf("running_since: %+v / %+v", dto.Jobs[0].RunningSince, dto.Jobs[1].RunningSince)
+	}
+	if strings.Count(body, "running_since") != 1 {
+		t.Errorf("only a running job carries it:\n%s", body)
+	}
+}

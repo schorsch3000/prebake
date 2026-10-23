@@ -278,11 +278,17 @@ func (d *Daemon) runJob(ctx context.Context, repo *config.Repo, job schedule.Job
 	var out tailBuffer
 	out.max = state.MaxLogBytes
 	started := d.now()
+	d.mu.Lock()
+	d.running[k] = started
+	d.mu.Unlock()
 	res, err := d.builder.Run(ctx, build.Job{
 		Container: k.Container, Flavor: k.Flavor, Kind: job.Kind,
 		ContextDir: repo.ContainerDir(k.Container), Config: c,
 	}, &out)
 	finished := d.now()
+	d.mu.Lock()
+	delete(d.running, k)
+	d.mu.Unlock()
 
 	rec := state.JobRecord{Container: k.Container, Flavor: k.Flavor, Kind: job.Kind,
 		Started: started, Finished: finished, OK: err == nil, Log: out.String()}
@@ -397,13 +403,15 @@ func (d *Daemon) maybeGC(ctx context.Context, repo *config.Repo) {
 
 // JobStatus describes one (container, flavor) for the status page.
 type JobStatus struct {
-	Key      schedule.Key
-	State    string // schedule.Status as text, or "idle"
-	Error    string
-	LastRun  string
-	Image    state.Image
-	NextKind schedule.Kind
-	NextRun  time.Time
+	Key     schedule.Key
+	State   string // schedule.Status as text, or "idle"
+	Error   string
+	LastRun string
+	Image   state.Image
+	// RunningSince is when the build in progress started (zero when nothing runs).
+	RunningSince time.Time
+	NextKind     schedule.Kind
+	NextRun      time.Time
 }
 
 // Status is a snapshot for the status page and `prebake status`.
@@ -420,6 +428,10 @@ func (d *Daemon) Status() Status {
 	for k, v := range d.lastRun {
 		last[k] = v
 	}
+	running := map[schedule.Key]time.Time{}
+	for k, v := range d.running {
+		running[k] = v
+	}
 	d.mu.Unlock()
 	if repo == nil {
 		return st
@@ -430,7 +442,7 @@ func (d *Daemon) Status() Status {
 		s, msg := d.queue.StatusOf(k)
 		eff := repo.Containers[k.Container].Effective(repo.Global)
 		kind, at := schedule.NextRun(repo.Global.Slots, policyOf(eff), img.State, now)
-		st.Jobs = append(st.Jobs, JobStatus{Key: k, State: s.String(), Error: msg, LastRun: last[k], Image: img, NextKind: kind, NextRun: at})
+		st.Jobs = append(st.Jobs, JobStatus{Key: k, State: s.String(), Error: msg, LastRun: last[k], Image: img, RunningSince: running[k], NextKind: kind, NextRun: at})
 	}
 	sort.Slice(st.Jobs, func(i, j int) bool { return st.Jobs[i].Key.String() < st.Jobs[j].Key.String() })
 	return st

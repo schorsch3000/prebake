@@ -239,6 +239,31 @@ tar -xzf prebake_${v}_${os}_${arch}.tar.gz && sudo install prebake_${v}_${os}_${
 prebake version
 ```
 
+### Shell completion, color, live view
+
+```sh
+source <(prebake completion bash)                       # bash; add it to ~/.bashrc
+prebake completion zsh  > "${fpath[1]}/_prebake"        # zsh
+prebake completion fish > ~/.config/fish/completions/prebake.fish
+```
+
+Subcommands, flags and flag values complete, and `prebake trigger <TAB>` offers the
+containers and flavors of the daemon you are talking to (`dev`, `dev:gpu`). The bash script is tested;
+the zsh and fish scripts are generated from the same table but only checked for
+well-formedness.
+
+`prebake status` and `dry-run` color their output when stdout is a terminal: green is
+fine, yellow is in motion or waiting, red needs attention. `NO_COLOR` or `TERM=dumb`
+switch it off, `--color always|never|auto` overrides.
+
+`prebake status --watch` (or `-w`, with `-n 1s` for the interval, default 2s) is a live
+view that redraws in place until Ctrl-C, shows how long a running build has been going, and
+keeps going when the daemon restarts. It needs a terminal; in scripts, loop around plain
+`prebake status`.
+
+`prebake daemon` is the service itself, what the container image runs; the other commands are
+the client. You normally never run `daemon` on your workstation.
+
 CI only tests the linux build; the macOS and Windows binaries are built but not
 exercised (the daemon itself needs Linux and Docker anyway). The same binary is
 inside the container image.

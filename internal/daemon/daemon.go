@@ -92,8 +92,9 @@ type Daemon struct {
 	badSHA     string                // last commit we reported as invalid
 	failing    map[schedule.Key]bool // keys with an unreported-recovery failure
 	gcPending  bool
-	gcForce    bool                    // manual request: ignore gc_slot_only
-	lastRun    map[schedule.Key]string // last result summary for status
+	gcForce    bool                       // manual request: ignore gc_slot_only
+	lastRun    map[schedule.Key]string    // last result summary for status
+	running    map[schedule.Key]time.Time // builds in progress and when they started
 
 	backoff time.Duration // current sync retry backoff
 	wake    chan struct{}
@@ -110,6 +111,7 @@ func New(opts Options, src Source, b Builder, reg Registry, store *state.Store, 
 		queue:   schedule.NewQueue(15*time.Minute, nil),
 		failing: map[schedule.Key]bool{},
 		lastRun: map[schedule.Key]string{},
+		running: map[schedule.Key]time.Time{},
 		wake:    make(chan struct{}, 1),
 	}
 }

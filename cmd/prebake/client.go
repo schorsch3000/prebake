@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -8,9 +9,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
-	"text/tabwriter"
+	"syscall"
 	"time"
 
 	"github.com/schorsch3000/prebake/internal/api"
@@ -73,16 +75,129 @@ func fmtTime(t *time.Time) string {
 	return t.Local().Format("2006-01-02 15:04")
 }
 
+// colorFlag registers --color.
+func colorFlag(fs *flag.FlagSet) *string {
+	return fs.String("color", "auto", "colored output: auto, always or never (auto: terminal only, off with NO_COLOR)")
+}
+
+// renderStatus renders the status table as text.
+func renderStatus(dto *api.StatusDTO, p palette) string {
+	var b strings.Builder
+	if dto.TimeZone != "" {
+		fmt.Fprintf(&b, "time zone of the build slots: %s\n", dto.TimeZone)
+	}
+	fmt.Fprintf(&b, "repo: %s  active=%s head=%s\n", p.paint(stateCode(dto.Repo.State), dto.Repo.State),
+		short(dto.Repo.Active, 7), short(dto.Repo.Head, 7))
+	if dto.Repo.Error != "" {
+		fmt.Fprintf(&b, "      %s\n", p.paint(ansiRed, strings.ReplaceAll(strings.TrimSpace(dto.Repo.Error), "\n", "\n      ")))
+	}
+	rows := [][]cell{{{"CONTAINER", ansiBold}, {"FLAVOR", ansiBold}, {"STATE", ansiBold}, {"LAST REBUILD", ansiBold}, {"LAST REFRESH", ansiBold}, {"ERROR", ansiBold}}}
+	for _, j := range dto.Jobs {
+		state := j.State
+		if j.RunningSince != nil && !dto.GeneratedAt.IsZero() {
+			state += " " + dto.GeneratedAt.Sub(*j.RunningSince).Round(time.Second).String()
+		}
+		when := func(t *time.Time) cell {
+			if t == nil {
+				return cell{"never", ansiDim}
+			}
+			return cell{fmtTime(t), ""}
+		}
+		rows = append(rows, []cell{{j.Container, ""}, {j.Flavor, ""}, {state, stateCode(j.State)},
+			when(j.LastRebuild), when(j.LastRefresh), {errorSummary(j.Error), ansiDim}})
+	}
+	b.WriteString(p.table(rows))
+	return b.String()
+}
+
+// watchContext and the clock are replaced in tests.
+var (
+	watchContext = func() (context.Context, context.CancelFunc) {
+		return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	}
+	watchNow = time.Now
+)
+
+// Terminal control sequences of the live view: cursor home, erase to end of line, erase below.
+const (
+	cursorHome = "\x1b[H"
+	eraseLine  = "\x1b[K"
+	eraseBelow = "\x1b[J"
+)
+
+// watchStatus redraws the status every interval until ctx ends. It paints each frame in one
+// write over the previous one (no flicker from clearing the screen), and keeps going when the
+// daemon cannot be reached, so a restart of the daemon is visible instead of fatal.
+func watchStatus(ctx context.Context, out io.Writer, interval time.Duration, p palette, fetch func() (*api.StatusDTO, error)) {
+	frame := func() {
+		var body string
+		if dto, err := fetch(); err != nil {
+			body = p.paint(ansiRed, "cannot reach the daemon: "+err.Error()+" (retrying)") + "\n"
+		} else {
+			body = renderStatus(dto, p)
+		}
+		footer := p.paint(ansiDim, fmt.Sprintf("updated %s, every %s, Ctrl-C to quit", watchNow().Format("15:04:05"), interval))
+		var b strings.Builder
+		b.WriteString(cursorHome)
+		for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+			b.WriteString(line + eraseLine + "\n")
+		}
+		b.WriteString(eraseLine + "\n" + footer + eraseLine + "\n" + eraseBelow)
+		io.WriteString(out, b.String())
+	}
+	io.WriteString(out, "\x1b[2J") // the first frame starts on a clean screen
+	frame()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			frame()
+		}
+	}
+}
+
 func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	url := clientFlags(fs)
+	color := colorFlag(fs)
 	asJSON := fs.Bool("json", false, "print the raw JSON")
+	var watch bool
+	fs.BoolVar(&watch, "watch", false, "live view: redraw until Ctrl-C (needs a terminal)")
+	fs.BoolVar(&watch, "w", false, "same as --watch")
+	interval := 2 * time.Second
+	fs.DurationVar(&interval, "interval", interval, "refresh interval for --watch")
+	fs.DurationVar(&interval, "n", interval, "same as --interval")
 	if _, err := parseInterspersed(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
+	}
+	p, err := newPalette(*color, stdout)
+	if err != nil {
+		fmt.Fprintln(stderr, "prebake status:", err)
+		return 2
+	}
+	if watch {
+		switch {
+		case *asJSON:
+			fmt.Fprintln(stderr, "prebake status: --watch and --json cannot be combined")
+			return 2
+		case interval < 200*time.Millisecond:
+			fmt.Fprintln(stderr, "prebake status: --interval must be at least 200ms")
+			return 2
+		case !isTerminal(stdout):
+			fmt.Fprintln(stderr, "prebake status: --watch needs a terminal (use a loop around plain status in scripts)")
+			return 2
+		}
+		ctx, cancel := watchContext()
+		defer cancel()
+		watchStatus(ctx, stdout, interval, p, func() (*api.StatusDTO, error) { return fetchStatus(*url) })
+		return 0
 	}
 	dto, err := fetchStatus(*url)
 	if err != nil {
@@ -95,19 +210,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		enc.Encode(dto)
 		return 0
 	}
-	if dto.TimeZone != "" {
-		fmt.Fprintf(stdout, "time zone of the build slots: %s\n", dto.TimeZone)
-	}
-	fmt.Fprintf(stdout, "repo: %s  active=%s head=%s\n", dto.Repo.State, short(dto.Repo.Active, 7), short(dto.Repo.Head, 7))
-	if dto.Repo.Error != "" {
-		fmt.Fprintf(stdout, "      %s\n", strings.ReplaceAll(strings.TrimSpace(dto.Repo.Error), "\n", "\n      "))
-	}
-	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "CONTAINER\tFLAVOR\tSTATE\tLAST REBUILD\tLAST REFRESH\tERROR")
-	for _, j := range dto.Jobs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", j.Container, j.Flavor, j.State, fmtTime(j.LastRebuild), fmtTime(j.LastRefresh), errorSummary(j.Error))
-	}
-	w.Flush()
+	fmt.Fprint(stdout, renderStatus(dto, p))
 	return 0
 }
 
@@ -115,10 +218,16 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("dry-run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	url := clientFlags(fs)
+	color := colorFlag(fs)
 	if _, err := parseInterspersed(fs, args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
+		return 2
+	}
+	p, err := newPalette(*color, stdout)
+	if err != nil {
+		fmt.Fprintln(stderr, "prebake dry-run:", err)
 		return 2
 	}
 	dto, err := fetchStatus(*url)
@@ -138,21 +247,19 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 		return a.Before(*b)
 	})
 	now := dto.GeneratedAt
-	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "CONTAINER\tFLAVOR\tNEXT\tAT\tIN")
+	rows := [][]cell{{{"CONTAINER", ansiBold}, {"FLAVOR", ansiBold}, {"NEXT", ansiBold}, {"AT", ansiBold}, {"IN", ansiBold}}}
 	for _, j := range jobs {
 		if j.NextRun == nil || j.NextKind == "" {
-			fmt.Fprintf(w, "%s\t%s\t-\t-\t(%s)\n", j.Container, j.Flavor, j.State)
+			rows = append(rows, []cell{{j.Container, ""}, {j.Flavor, ""}, {"-", ""}, {"-", ""}, {"(" + j.State + ")", stateCode(j.State)}})
 			continue
 		}
-		in := j.NextRun.Sub(now).Round(time.Minute)
-		rel := "now"
-		if in > 0 {
-			rel = in.String()
+		in := cell{"now", ansiYellow}
+		if d := j.NextRun.Sub(now).Round(time.Minute); d > 0 {
+			in = cell{d.String(), ""}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", j.Container, j.Flavor, j.NextKind, fmtTime(j.NextRun), rel)
+		rows = append(rows, []cell{{j.Container, ""}, {j.Flavor, ""}, {j.NextKind, ""}, {fmtTime(j.NextRun), ""}, in})
 	}
-	w.Flush()
+	fmt.Fprint(stdout, p.table(rows))
 	return 0
 }
 

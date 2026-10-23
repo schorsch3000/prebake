@@ -48,17 +48,18 @@ type RepoDTO struct {
 }
 
 type JobDTO struct {
-	Container   string     `json:"container"`
-	Flavor      string     `json:"flavor"`
-	State       string     `json:"state"`
-	Error       string     `json:"error,omitempty"`
-	LastRun     string     `json:"last_run,omitempty"`
-	LastRebuild *time.Time `json:"last_rebuild,omitempty"`
-	LastRefresh *time.Time `json:"last_refresh,omitempty"`
-	DateTag     string     `json:"date_tag,omitempty"`
-	Digest      string     `json:"digest,omitempty"`
-	NextKind    string     `json:"next_kind,omitempty"`
-	NextRun     *time.Time `json:"next_run,omitempty"`
+	Container    string     `json:"container"`
+	Flavor       string     `json:"flavor"`
+	State        string     `json:"state"`
+	Error        string     `json:"error,omitempty"`
+	LastRun      string     `json:"last_run,omitempty"`
+	RunningSince *time.Time `json:"running_since,omitempty"`
+	LastRebuild  *time.Time `json:"last_rebuild,omitempty"`
+	LastRefresh  *time.Time `json:"last_refresh,omitempty"`
+	DateTag      string     `json:"date_tag,omitempty"`
+	Digest       string     `json:"digest,omitempty"`
+	NextKind     string     `json:"next_kind,omitempty"`
+	NextRun      *time.Time `json:"next_run,omitempty"`
 }
 
 func tp(t time.Time) *time.Time {
@@ -78,7 +79,8 @@ func ToDTO(s daemon.Status, now time.Time) StatusDTO {
 	for _, j := range s.Jobs {
 		d := JobDTO{
 			Container: j.Key.Container, Flavor: j.Key.Flavor, State: j.State, Error: j.Error, LastRun: j.LastRun,
-			LastRebuild: tp(j.Image.LastRebuild), LastRefresh: tp(j.Image.LastRefresh),
+			RunningSince: tp(j.RunningSince),
+			LastRebuild:  tp(j.Image.LastRebuild), LastRefresh: tp(j.Image.LastRefresh),
 			DateTag: j.Image.DateTag, Digest: j.Image.Digest, NextRun: tp(j.NextRun),
 		}
 		if j.NextKind != schedule.None && !j.NextRun.IsZero() {

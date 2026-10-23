@@ -22,7 +22,8 @@ import (
 // --- fakes ---------------------------------------------------------------------------
 
 type fakeBuilder struct {
-	reg   *fakeRegistry // gets the alias tag of every successful build, like the real registry
+	onRun func(build.Job) // called while the build "runs"
+	reg   *fakeRegistry   // gets the alias tag of every successful build, like the real registry
 	mu    sync.Mutex
 	runs  []string        // "<container>:<flavor> <kind>"
 	fail  map[string]int  // container -> remaining failures
@@ -34,6 +35,11 @@ func (f *fakeBuilder) Run(_ context.Context, j build.Job, log io.Writer) (*build
 	defer f.mu.Unlock()
 	f.runs = append(f.runs, j.Container+":"+j.Flavor+" "+j.Kind.String())
 	io.WriteString(log, "building "+j.Container+"\n")
+	if f.onRun != nil {
+		f.mu.Unlock() // the callback looks at the daemon, which must not wait for this lock
+		f.onRun(j)
+		f.mu.Lock()
+	}
 	if f.fail[j.Container] > 0 {
 		f.fail[j.Container]--
 		if f.testF[j.Container] {
@@ -852,5 +858,32 @@ func TestRefreshOfAStaleImageDoesNotHideTheStaleness(t *testing.T) {
 	h.tick()
 	if got := h.b.take(); len(got) != 1 || got[0] != "base:default rebuild" {
 		t.Errorf("the image is still stale and must be rebuilt: %v", got)
+	}
+}
+
+func TestStatusShowsTheBuildInProgress(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	var during Status
+	h.b.onRun = func(j build.Job) {
+		if j.Container == "base" {
+			during = h.d.Status()
+		}
+	}
+	h.tick()
+	var base JobStatus
+	for _, j := range during.Jobs {
+		if j.Key.Container == "base" {
+			base = j
+		}
+	}
+	if base.State != "building" || !base.RunningSince.Equal(h.clk.now()) {
+		t.Errorf("during the build: %+v", base)
+	}
+	after := h.d.Status()
+	for _, j := range after.Jobs {
+		if !j.RunningSince.IsZero() {
+			t.Errorf("nothing runs after the build: %+v", j)
+		}
 	}
 }
