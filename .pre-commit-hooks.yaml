@@ -1,0 +1,14 @@
+# For the pre-commit framework (https://pre-commit.com). In the config repo:
+#   repos:
+#     - repo: <url of the prebake repo>
+#       rev: <tag>
+#       hooks:
+#         - id: prebake-validate
+# Requires the `prebake` binary on PATH.
+- id: prebake-validate
+  name: prebake validate
+  description: Validate the prebake config repo (staged tree)
+  entry: prebake validate --staged
+  language: system
+  pass_filenames: false
+  always_run: true

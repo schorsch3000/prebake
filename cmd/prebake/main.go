@@ -34,7 +34,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "validate":
 		return cmdValidate(args[1:], stdout, stderr)
-	case "daemon", "install-hook", "show-key", "status", "trigger", "dry-run", "gc":
+	case "install-hook":
+		return cmdInstallHook(args[1:], stdout, stderr)
+	case "daemon", "show-key", "status", "trigger", "dry-run", "gc":
 		fmt.Fprintf(stderr, "prebake %s: not implemented\n", args[0])
 		return 2
 	default:

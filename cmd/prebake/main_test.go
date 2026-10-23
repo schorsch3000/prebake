@@ -136,3 +136,36 @@ func TestValidateUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallHook(t *testing.T) {
+	root := goodRepo(t)
+	if code, out, e := runCLI(t, "install-hook", "--repo", root); code != 0 {
+		t.Fatalf("install: %d %q %q", code, out, e)
+	}
+	hook := filepath.Join(root, ".git", "hooks", "pre-commit")
+	st, err := os.Stat(hook)
+	if err != nil || st.Mode()&0o111 == 0 {
+		t.Fatalf("hook missing or not executable: %v %v", err, st)
+	}
+	// reinstall over our own hook is fine
+	if code, _, _ := runCLI(t, "install-hook", "--repo", root); code != 0 {
+		t.Errorf("reinstall: %d", code)
+	}
+	// foreign hook is protected
+	os.WriteFile(hook, []byte("#!/bin/sh\necho mine\n"), 0o755)
+	if code, _, _ := runCLI(t, "install-hook", "--repo", root); code != 1 {
+		t.Errorf("foreign hook must be protected: %d", code)
+	}
+	if b, _ := os.ReadFile(hook); !strings.Contains(string(b), "mine") {
+		t.Error("foreign hook was overwritten")
+	}
+	if code, _, _ := runCLI(t, "install-hook", "--repo", root, "--force"); code != 0 {
+		t.Errorf("--force: %d", code)
+	}
+	if b, _ := os.ReadFile(hook); !strings.Contains(string(b), hookMarker) {
+		t.Error("--force did not overwrite")
+	}
+	if code, _, _ := runCLI(t, "install-hook", "--repo", t.TempDir()); code != 2 {
+		t.Errorf("non-repo: %d", code)
+	}
+}
