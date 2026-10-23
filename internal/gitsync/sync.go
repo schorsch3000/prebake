@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -202,4 +203,35 @@ func (s *Syncer) Cleanup(keep int) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// FollowedBranch is the branch this syncer follows.
+func (s *Syncer) FollowedBranch() string { return s.Branch }
+
+var shaRe = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+
+// Contains reports whether commit sha is in the history of the followed branch as fetched so
+// far: the answer to "has the daemon seen my push yet".
+func (s *Syncer) Contains(ctx context.Context, sha string) (bool, error) {
+	if !shaRe.MatchString(sha) {
+		return false, fmt.Errorf("invalid commit %q", sha)
+	}
+	if _, err := os.Stat(s.repoDir()); err != nil {
+		return false, nil // nothing fetched yet
+	}
+	if _, err := s.git(ctx, s.repoDir(), "cat-file", "-e", sha+"^{commit}"); err != nil {
+		return false, nil // unknown commit
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", s.repoDir(), "merge-base", "--is-ancestor", sha, "refs/heads/"+s.Branch)
+	switch err := cmd.Run().(type) {
+	case nil:
+		return true, nil
+	case *exec.ExitError:
+		if err.ExitCode() == 1 {
+			return false, nil // known, but not on the followed branch
+		}
+		return false, err
+	default:
+		return false, err
+	}
 }

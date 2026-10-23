@@ -49,6 +49,13 @@ var commands = []cmdSpec{
 		fURL,
 		{Name: "kind", Value: "rebuild|refresh", Help: "rebuild (default) or refresh"},
 	}},
+	{Name: "sync", Group: groupClient, Help: "fetch the config repo now instead of at the next poll", Flags: []flagSpec{
+		fURL,
+		{Name: "commit", Value: "text", Help: "wait until the daemon has seen this commit (HEAD: the one checked out here)"},
+		{Name: "branch", Value: "text", Help: "the branch that was pushed; other branches than the daemon's are ignored"},
+		{Name: "timeout", Value: "text", Help: "how long --commit waits for the commit to appear at the remote (default 2m)"},
+		{Name: "quiet", Help: "print nothing when it worked"},
+	}},
 	{Name: "gc", Group: groupClient, Help: "run registry garbage collection", Flags: []flagSpec{fURL}},
 
 	{Name: "validate", Group: groupRepo, Help: "validate a config repo", Flags: []flagSpec{
@@ -62,6 +69,8 @@ var commands = []cmdSpec{
 	{Name: "install-hook", Group: groupRepo, Help: "install the pre-commit hook", Flags: []flagSpec{
 		{Name: "repo", Value: "dir", Help: "path of the config repo (default .)"},
 		{Name: "force", Help: "overwrite a hook that prebake did not write"},
+		{Name: "sync", Help: "also install a pre-push hook that asks the daemon to fetch right after a push"},
+		{Name: "url", Value: "text", Help: "with --sync: remember the daemon's status URL in the repo (git config prebake.url)"},
 	}},
 
 	{Name: "show-key", Group: groupOther, Help: "print the SSH deploy public key (reads the data directory: run it in the container)", Flags: []flagSpec{

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sort"
 	"strconv"
@@ -17,15 +18,26 @@ import (
 	"time"
 
 	"github.com/schorsch3000/prebake/internal/api"
+	"github.com/schorsch3000/prebake/internal/daemon"
 )
 
 // clientFlags registers --url (default PREBAKE_URL or the local daemon).
 func clientFlags(fs *flag.FlagSet) *string {
-	def := os.Getenv("PREBAKE_URL")
-	if def == "" {
-		def = "http://127.0.0.1:8080"
+	return fs.String("url", defaultURL(), "base URL of the daemon's status listener (PREBAKE_URL, else `git config prebake.url`)")
+}
+
+// defaultURL is $PREBAKE_URL, else the prebake.url of the git repository in the current
+// directory (what `install-hook --sync --url` sets, for the pre-push hook), else the local daemon.
+func defaultURL() string {
+	if u := os.Getenv("PREBAKE_URL"); u != "" {
+		return u
 	}
-	return fs.String("url", def, "base URL of the daemon's status listener (PREBAKE_URL)")
+	if out, err := exec.Command("git", "config", "--get", "prebake.url").Output(); err == nil {
+		if u := strings.TrimSpace(string(out)); u != "" {
+			return u
+		}
+	}
+	return "http://127.0.0.1:8080"
 }
 
 // parseInterspersed parses flags that may come before or after positional
@@ -366,6 +378,94 @@ func cmdLogs(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// syncPoll is how often `sync --commit` asks again while the commit is not visible yet.
+var syncPoll = 2 * time.Second
+
+func cmdSync(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: prebake sync [--commit SHA|HEAD] [--branch NAME] [--timeout 2m] [--quiet] [--url URL]")
+	}
+	url := clientFlags(fs)
+	commit := fs.String("commit", "", "wait until the daemon has seen this commit (HEAD: the commit checked out here)")
+	branch := fs.String("branch", "", "the branch that was pushed; the daemon ignores a request about another branch")
+	timeout := fs.Duration("timeout", 2*time.Minute, "how long --commit waits for the commit to show up at the remote")
+	quiet := fs.Bool("quiet", false, "print nothing when it worked")
+	if _, err := parseInterspersed(fs, args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	sha := *commit
+	if sha == "HEAD" {
+		out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+		if err != nil {
+			fmt.Fprintln(stderr, "prebake sync: --commit HEAD needs a git repository in the current directory")
+			return 2
+		}
+		sha = strings.TrimSpace(string(out))
+	}
+	deadline := time.Now().Add(*timeout)
+	client := &http.Client{Timeout: 3 * time.Minute} // a fetch can take a while
+	for {
+		q := "?"
+		if sha != "" {
+			q += "commit=" + sha + "&"
+		}
+		if *branch != "" {
+			q += "branch=" + *branch
+		}
+		resp, err := client.Post(strings.TrimSuffix(*url, "/")+"/sync"+strings.TrimRight(q, "&?"), "", nil)
+		if err != nil {
+			fmt.Fprintln(stderr, "prebake sync:", err)
+			return 2
+		}
+		var res daemon.SyncResult
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			fmt.Fprintf(stderr, "prebake sync: %d %s\n", resp.StatusCode, strings.TrimSpace(string(body)))
+			return 1
+		}
+		if err := json.Unmarshal(body, &res); err != nil {
+			fmt.Fprintln(stderr, "prebake sync: cannot read the answer:", err)
+			return 2
+		}
+		if res.Ignored {
+			if !*quiet {
+				fmt.Fprintf(stdout, "ignored: the daemon follows %s, not %s\n", res.Branch, *branch)
+			}
+			return 0
+		}
+		if sha != "" && (res.HasCommit == nil || !*res.HasCommit) {
+			if time.Now().Add(syncPoll).After(deadline) {
+				fmt.Fprintf(stderr, "prebake sync: commit %s did not show up on %s within %s\n", short(sha, 7), res.Branch, *timeout)
+				return 1
+			}
+			time.Sleep(syncPoll)
+			continue
+		}
+		if res.State != daemon.RepoOK {
+			fmt.Fprintf(stderr, "prebake sync: repo is %s", res.State)
+			if res.Error != "" {
+				fmt.Fprintf(stderr, ":\n  %s", strings.ReplaceAll(strings.TrimSpace(res.Error), "\n", "\n  "))
+			}
+			fmt.Fprintln(stderr)
+			return 1
+		}
+		if !*quiet {
+			what := "up to date"
+			if res.Changed {
+				what = "new commit activated"
+			}
+			fmt.Fprintf(stdout, "synced: running %s on %s (%s)\n", short(res.Active, 7), res.Branch, what)
+		}
+		return 0
+	}
 }
 
 func cmdGC(args []string, stdout, stderr io.Writer) int {

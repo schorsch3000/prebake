@@ -299,6 +299,9 @@ Status listener (default `:8080`, read-only except trigger, no auth):
 - `GET /` HTML overview, `GET /status` JSON (per container/flavor: last
   rebuild/refresh, next due, state: ok / queued / building / retrying / parked /
   skipped / degraded, digest, last error).
+- `POST /sync[?commit=<sha>][&branch=<name>]`: fetch, validate and activate now (serialized with the poll loop)
+  and answer with the repo state; with `commit` it also says whether that commit is part of the followed
+  branch yet, so a client that has just pushed asks again until it is; another `branch` is ignored.
 - `GET /logs/<container>[/<flavor>]?follow=1&tail=N`: build output as a streamed text
   response. The running build is kept in memory (last 512 KiB), the last finished one
   also; after a restart the last recorded log of the state database is served. With

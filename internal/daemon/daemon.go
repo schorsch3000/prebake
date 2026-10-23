@@ -24,6 +24,10 @@ type Source interface {
 	Promote(sha string) error
 	Current() (path, sha string, ok bool)
 	Cleanup(keep int) error
+	// Contains reports whether commit sha is part of the followed branch as fetched so far.
+	Contains(ctx context.Context, sha string) (bool, error)
+	// FollowedBranch is the branch the daemon follows.
+	FollowedBranch() string
 }
 
 // Builder runs one job; *build.Runner implements it.
@@ -98,6 +102,7 @@ type Daemon struct {
 	logs       map[schedule.Key]*LiveLog  // output of the current or last build in this process
 
 	backoff time.Duration // current sync retry backoff
+	syncMu  sync.Mutex    // one fetch at a time: the poll loop and `prebake sync` must not interleave
 	wake    chan struct{}
 }
 

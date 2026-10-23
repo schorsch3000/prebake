@@ -124,6 +124,7 @@ prebake validate                  # files on disk
 prebake validate --staged         # what is about to be committed
 prebake validate --rev origin/main
 prebake install-hook              # runs `validate --staged` as a pre-commit hook
+prebake install-hook --sync --url http://prebake.example:8080   # also: tell the daemon to fetch after every push
 ```
 
 Exit codes: 0 ok, 1 validation errors, 2 usage error. `--strict` fails on
@@ -153,6 +154,7 @@ it is reloaded when the files change), add the CA to
 prebake status [--json] [--watch]
 prebake logs <container>[:<flavor>] [-f] [--tail N]
 prebake dry-run
+prebake sync [--commit SHA|HEAD] [--branch NAME]
 prebake trigger <container>[:<flavor>] [--kind rebuild|refresh]
 prebake gc
 prebake show-key
@@ -160,7 +162,7 @@ prebake show-key
 
 The client commands talk to the status API (`--url` or `PREBAKE_URL`, default
 `http://127.0.0.1:8080`); in Compose run them with `docker compose exec prebake prebake ...`.
-API: `GET /status` (JSON), `GET /logs/<container>[/<flavor>][?follow=1&tail=N]` (build output, streamed), `GET /pubkey`, `POST /trigger/<container>[/<flavor>]?kind=...`, `POST /gc`.
+API: `POST /sync[?commit=SHA&branch=NAME]` (fetch now), `GET /status` (JSON), `GET /logs/<container>[/<flavor>][?follow=1&tail=N]` (build output, streamed), `GET /pubkey`, `POST /trigger/<container>[/<flavor>]?kind=...`, `POST /gc`.
 
 ### Notifications
 
@@ -261,6 +263,21 @@ switch it off, `--color always|never|auto` overrides.
 view that redraws in place until Ctrl-C, shows how long a running build has been going, and
 keeps going when the daemon restarts. It needs a terminal; in scripts, loop around plain
 `prebake status`.
+
+**Fetch now.** The daemon polls the config repo every `POLL_INTERVAL` (5 minutes by default).
+`prebake sync` makes it fetch, validate and activate right now and reports the result (`synced: running
+1a2b3c4 on main (new commit activated)`, or why the commit was rejected). Typical use right after a push:
+`git push && prebake sync --commit HEAD`: with `--commit` it asks again every 2 seconds until the daemon
+has seen that commit (up to `--timeout`, default 2m), so it does not matter that the push is still arriving.
+`--branch` makes the daemon ignore pushes of other branches than the one it follows.
+
+`prebake install-hook --sync` automates that with a `pre-push` hook: git has no hook that runs after
+the push, so the hook starts `prebake sync --commit <pushed commit>` in the background, which waits for the commit
+to show up and then makes the daemon fetch. The push is never delayed and never fails because of it, tags and
+deleted branches are skipped, and without `prebake` in the PATH it does nothing. The hook finds the daemon through
+`$PREBAKE_URL` or `git config prebake.url` (`--url` sets that for the repo; so does `git config prebake.url ...`).
+This also works as a "refresh" on any client command: the URL falls back to `git config prebake.url` in the current
+repository.
 
 `prebake logs dev` prints the build output of the build in progress, or of the last one (kept
 over restarts). `prebake logs -f dev` follows a running build until it ends and waits for a queued

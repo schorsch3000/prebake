@@ -23,6 +23,9 @@ type fakeBackend struct {
 	err       error
 	also      []string
 	gcs       int
+	syncCalls []string
+	syncRes   daemon.SyncResult
+	syncErr   error
 	logCalls  []string
 	logErr    error
 	logStream daemon.LogStream
@@ -34,6 +37,11 @@ func (f *fakeBackend) Trigger(c, fl string, k schedule.Kind) ([]string, error) {
 	return f.also, f.err
 }
 func (f *fakeBackend) RequestGC() { f.gcs++ }
+
+func (f *fakeBackend) SyncNow(_ context.Context, commit, branch string) (daemon.SyncResult, error) {
+	f.syncCalls = append(f.syncCalls, commit+"@"+branch)
+	return f.syncRes, f.syncErr
+}
 
 // fakeStream plays a LogStream: it writes its lines, flushing each, and (with follow) waits for
 // release before ending, like a build that is still running.
@@ -368,4 +376,41 @@ func (e endNotifier) Stream(ctx context.Context, w io.Writer, follow bool, tail 
 	err := e.fakeStream.Stream(ctx, w, follow, tail, flush)
 	close(e.ended)
 	return err
+}
+
+func TestSyncEndpoint(t *testing.T) {
+	yes := true
+	b := fixture()
+	b.syncRes = daemon.SyncResult{Branch: "main", State: daemon.RepoOK, Head: "abc", Active: "abc", Changed: true, HasCommit: &yes}
+	srv := serve(t, b)
+	code, body := post(t, srv.URL+"/sync?commit=abc1234&branch=main", nil)
+	if code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	var got daemon.SyncResult
+	if err := json.Unmarshal([]byte(body), &got); err != nil || got.State != daemon.RepoOK || !got.Changed || got.HasCommit == nil || !*got.HasCommit || got.Branch != "main" {
+		t.Errorf("%+v %v\n%s", got, err, body)
+	}
+	if code, _ := post(t, srv.URL+"/sync", nil); code != 200 {
+		t.Errorf("plain sync: %d", code)
+	}
+	if strings.Join(b.syncCalls, ",") != "abc1234@main,@" {
+		t.Errorf("query not passed on: %v", b.syncCalls)
+	}
+	b.syncErr = fmt.Errorf("%w: invalid commit", daemon.ErrInvalid)
+	if code, _ := post(t, srv.URL+"/sync?commit=zzz", nil); code != 400 {
+		t.Errorf("invalid: %d", code)
+	}
+	b.syncErr = errors.New("boom")
+	if code, _ := post(t, srv.URL+"/sync", nil); code != 500 {
+		t.Errorf("boom: %d", code)
+	}
+	if code, _, _ := get(t, srv.URL+"/sync"); code != 405 {
+		t.Errorf("GET /sync: %d", code)
+	}
+	// a browser on another site must not be able to make the daemon fetch
+	b.syncErr = nil
+	if code, _ := post(t, srv.URL+"/sync", map[string]string{"Origin": "http://evil.example"}); code != 403 {
+		t.Errorf("cross-origin: %d", code)
+	}
 }

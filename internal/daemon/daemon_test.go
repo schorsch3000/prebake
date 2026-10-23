@@ -1029,3 +1029,92 @@ func TestLogsFollowOfAParkedJobExplains(t *testing.T) {
 		t.Errorf("the failed build's output is still available: %q", b.String())
 	}
 }
+
+// --- sync now -----------------------------------------------------------------------------
+
+func (h *harness) head() string { return sh(h.t, h.work, "rev-parse", "HEAD") }
+
+func TestSyncNowActivatesWithoutWaitingForThePoll(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	before := h.d.Status().Repo.Active
+	h.push("change base", map[string]string{"containers/base/Dockerfile": "FROM debian\nRUN echo new\n"})
+	want := h.head()
+	res, err := h.d.SyncNow(context.Background(), want, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != RepoOK || res.Active != want || res.Head != want || !res.Changed || res.Branch != "main" ||
+		res.HasCommit == nil || !*res.HasCommit || res.Ignored {
+		t.Errorf("%+v", res)
+	}
+	if before == want {
+		t.Fatal("test setup")
+	}
+	// nothing new: unchanged, still fine
+	res, _ = h.d.SyncNow(context.Background(), want, "")
+	if res.Changed || res.State != RepoOK {
+		t.Errorf("second call: %+v", res)
+	}
+	// the scheduler is woken: the stale image is rebuilt on the next tick
+	h.b.take()
+	h.tick()
+	if got := h.b.take(); len(got) == 0 {
+		t.Errorf("a changed commit must lead to builds: %v", got)
+	}
+}
+
+func TestSyncNowAnswersForACommitThatIsNotThereYet(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	res, err := h.d.SyncNow(context.Background(), strings.Repeat("f", 40), "")
+	if err != nil || res.HasCommit == nil || *res.HasCommit || res.State != RepoOK {
+		t.Errorf("the push has not arrived: %+v %v", res, err)
+	}
+}
+
+func TestSyncNowIgnoresOtherBranchesAndRejectsGarbage(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	res, err := h.d.SyncNow(context.Background(), "", "feature/x")
+	if err != nil || !res.Ignored || res.Branch != "main" {
+		t.Errorf("%+v %v", res, err)
+	}
+	if _, err := h.d.SyncNow(context.Background(), "not-a-sha", ""); !errors.Is(err, ErrInvalid) {
+		t.Errorf("bad commit: %v", err)
+	}
+	if _, err := h.d.SyncNow(context.Background(), "abc; rm -rf /", ""); !errors.Is(err, ErrInvalid) {
+		t.Errorf("injection attempt: %v", err)
+	}
+}
+
+func TestSyncNowReportsAnInvalidCommit(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	good := h.d.Status().Repo.Active
+	h.push("stray file", map[string]string{"containers/base/junk.txt": "x"})
+	res, err := h.d.SyncNow(context.Background(), h.head(), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != RepoDegraded || !strings.Contains(res.Error, "junk.txt") || res.Active != good || res.Changed ||
+		res.HasCommit == nil || !*res.HasCommit {
+		t.Errorf("%+v", res)
+	}
+}
+
+func TestSyncNowRacesWithThePollLoopSafely(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	h.push("change", map[string]string{"containers/base/Dockerfile": "FROM debian\nRUN echo x\n"})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); h.d.SyncNow(context.Background(), h.head(), "") }()
+		go func() { defer wg.Done(); h.d.SyncOnce(context.Background()) }()
+	}
+	wg.Wait()
+	if got := h.d.Status().Repo; got.State != RepoOK || got.Active != h.head() {
+		t.Errorf("%+v", got)
+	}
+}

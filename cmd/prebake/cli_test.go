@@ -53,7 +53,7 @@ func TestCommandTableFlagsExist(t *testing.T) {
 	safe := map[string][]string{
 		"status": {"--url", "http://127.0.0.1:1"}, "dry-run": {"--url", "http://127.0.0.1:1"},
 		"trigger": {"--url", "http://127.0.0.1:1", "x"}, "logs": {"--url", "http://127.0.0.1:1", "x"}, "gc": {"--url", "http://127.0.0.1:1"},
-		"validate": {"--repo", tmp}, "install-hook": {"--repo", tmp}, "show-key": {"--data-dir", tmp},
+		"validate": {"--repo", tmp}, "install-hook": {"--repo", tmp}, "sync": {"--url", "http://127.0.0.1:1"}, "show-key": {"--data-dir", tmp},
 	}
 	for _, c := range commands {
 		base, ok := safe[c.Name]
@@ -74,7 +74,7 @@ func TestCommandTableFlagsExist(t *testing.T) {
 				default:
 					args = append([]string{c.Name, d, "x"}, base...)
 				}
-				if c.Name == "status" && (f.Name == "watch" || f.Short == "w") || c.Name == "logs" && f.Name == "tail" {
+				if c.Name == "status" && (f.Name == "watch" || f.Short == "w") || c.Name == "logs" && f.Name == "tail" || c.Name == "sync" && f.Name == "timeout" {
 					continue // would wait for a terminal; covered by its own test
 				}
 				_, _, errOut := runCLI(t, args...)

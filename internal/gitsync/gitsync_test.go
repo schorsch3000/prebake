@@ -262,3 +262,52 @@ func TestCleanupKeepsCurrentAndNewest(t *testing.T) {
 		}
 	}
 }
+
+func TestContains(t *testing.T) {
+	bare, work := origin(t)
+	s := &Syncer{URL: bare, Branch: "main", Dir: filepath.Join(t.TempDir(), "repo")}
+	ctx := context.Background()
+	if has, err := s.Contains(ctx, "abcdef1"); err != nil || has {
+		t.Errorf("before the first fetch: %v %v", has, err)
+	}
+	first := mustGit(t, work, "rev-parse", "HEAD")
+	if _, err := s.Fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second := commit(t, work, "f.txt", "x", "second") // pushed, not fetched yet
+	if has, err := s.Contains(ctx, first); err != nil || !has {
+		t.Errorf("fetched commit: %v %v", has, err)
+	}
+	if has, err := s.Contains(ctx, first[:8]); err != nil || !has {
+		t.Errorf("abbreviated commit: %v %v", has, err)
+	}
+	if has, err := s.Contains(ctx, second); err != nil || has {
+		t.Errorf("pushed but not fetched: %v %v", has, err)
+	}
+	if _, err := s.Fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if has, _ := s.Contains(ctx, second); !has {
+		t.Error("fetched now")
+	}
+	if has, err := s.Contains(ctx, strings.Repeat("f", 40)); err != nil || has {
+		t.Errorf("unknown commit: %v %v", has, err)
+	}
+	// a commit that is known but no longer on the branch (history rewritten by a force-push)
+	mustGit(t, work, "reset", "-q", "--hard", first)
+	mustGit(t, work, "push", "-q", "--force", "origin", "HEAD:main")
+	if _, err := s.Fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := s.Contains(ctx, second); err != nil || has {
+		t.Errorf("known but off the branch: %v %v", has, err)
+	}
+	for _, bad := range []string{"", "xyz", "abc", "HEAD", "main; rm -rf /", strings.Repeat("a", 65)} {
+		if _, err := s.Contains(ctx, bad); err == nil {
+			t.Errorf("%q must be rejected", bad)
+		}
+	}
+	if s.FollowedBranch() != "main" {
+		t.Error("FollowedBranch")
+	}
+}

@@ -145,6 +145,9 @@ printf 'depends_on: [ci-demo]\ntests:\n  - "test -f /base && test -f /child"\n' 
 git -C "$work/w" add -A
 git -C "$work/w" commit -q -m "ci-child"
 git -C "$work/w" push -q origin HEAD:main
+# do not wait for the poll: ask the daemon to fetch now, and wait until it has seen this commit
+sha=$(git -C "$work/w" rev-parse HEAD)
+"${compose[@]}" exec -T prebake prebake sync --commit "$sha" --branch main --timeout 60s | grep -q "running ${sha:0:7}"
 wait_for 300 "ci-child to be built" job_built ci-child
 docker pull -q localhost:$read_port/ci-child:latest
 test "$(docker run --rm localhost:$read_port/ci-child:latest cat /child)" = child

@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ type Backend interface {
 	Status() daemon.Status
 	Trigger(container, flavor string, kind schedule.Kind) (alsoQueued []string, err error)
 	RequestGC()
+	// SyncNow fetches the config repo now (see daemon.Daemon.SyncNow).
+	SyncNow(ctx context.Context, commit, branch string) (daemon.SyncResult, error)
 	// Logs returns the build output of a container flavor (see daemon.Daemon.Logs).
 	Logs(container, flavor string, follow bool) (daemon.LogStream, error)
 }
@@ -107,6 +110,7 @@ func Handler(b Backend, key KeyInfo, now func() time.Time) http.Handler {
 	mux.HandleFunc("POST /trigger/{container}", s.trigger)
 	mux.HandleFunc("POST /trigger/{container}/{flavor}", s.trigger)
 	mux.HandleFunc("POST /gc", s.gc)
+	mux.HandleFunc("POST /sync", s.sync)
 	mux.HandleFunc("GET /logs/{container}", s.logs)
 	mux.HandleFunc("GET /logs/{container}/{flavor}", s.logs)
 	return sameOrigin(mux)
@@ -190,6 +194,23 @@ func flavorOrDefault(f string) string {
 		return "default"
 	}
 	return f
+}
+
+// sync fetches the config repo now: POST /sync[?commit=<sha>][&branch=<name>]. It answers when the
+// fetch, the validation and the activation are done, with the state of the repo.
+func (s *server) sync(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	res, err := s.b.SyncNow(ctx, r.URL.Query().Get("commit"), r.URL.Query().Get("branch"))
+	if err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, daemon.ErrInvalid) {
+			code = http.StatusBadRequest
+		}
+		writeJSON(w, code, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // logs streams the build output of a container flavor: GET /logs/<container>[/<flavor>]

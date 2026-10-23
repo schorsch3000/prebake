@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -123,6 +124,8 @@ func (d *Daemon) setRepoStatus(st RepoState, err error) {
 // SyncOnce fetches the repo and, when the branch moved, validates and activates
 // the new commit. An invalid commit never replaces the last good one.
 func (d *Daemon) SyncOnce(ctx context.Context) error {
+	d.syncMu.Lock()
+	defer d.syncMu.Unlock()
 	head, err := d.src.Fetch(ctx)
 	d.mu.Lock()
 	d.repoStatus.LastFetch = d.now()
@@ -237,4 +240,56 @@ func (d *Daemon) clearQueueState() {
 	for _, s := range states {
 		d.store.DeleteQueueState(s.Key)
 	}
+}
+
+var commitRe = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+
+// SyncResult is the outcome of SyncNow.
+type SyncResult struct {
+	Branch    string    `json:"branch"`            // the branch the daemon follows
+	Ignored   bool      `json:"ignored,omitempty"` // the request was about another branch
+	State     RepoState `json:"state"`
+	Head      string    `json:"head,omitempty"`   // newest commit seen
+	Active    string    `json:"active,omitempty"` // commit the daemon runs on
+	Error     string    `json:"error,omitempty"`  // why the repo is not "ok"
+	Changed   bool      `json:"changed"`          // the active commit changed
+	HasCommit *bool     `json:"has_commit,omitempty"`
+}
+
+// SyncNow fetches the repo right now instead of at the next poll, validates and activates what
+// it finds, and reports the result. With commit it also says whether that commit is part of the
+// followed branch yet (a client that has just pushed asks again until it is). A request that
+// names another branch is ignored, so a hook can report every push without caring which branch
+// the daemon follows.
+func (d *Daemon) SyncNow(ctx context.Context, commit, branch string) (SyncResult, error) {
+	res := SyncResult{Branch: d.src.FollowedBranch()}
+	if branch != "" && branch != res.Branch {
+		res.Ignored = true
+		d.mu.Lock()
+		res.State, res.Head, res.Active = d.repoStatus.State, d.repoStatus.Head, d.repoStatus.Active
+		d.mu.Unlock()
+		return res, nil
+	}
+	if commit != "" && !commitRe.MatchString(commit) {
+		return res, fmt.Errorf("%w: invalid commit %q", ErrInvalid, commit)
+	}
+	d.mu.Lock()
+	before := d.repoSHA
+	d.mu.Unlock()
+	syncErr := d.SyncOnce(ctx)
+	d.mu.Lock()
+	res.State, res.Head, res.Active, res.Error = d.repoStatus.State, d.repoStatus.Head, d.repoStatus.Active, d.repoStatus.Error
+	res.Changed = d.repoSHA != before
+	d.mu.Unlock()
+	if syncErr != nil && res.Error == "" {
+		res.Error = syncErr.Error()
+	}
+	if commit != "" {
+		has, err := d.src.Contains(ctx, commit)
+		if err != nil {
+			return res, fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
+		res.HasCommit = &has
+	}
+	return res, nil
 }
