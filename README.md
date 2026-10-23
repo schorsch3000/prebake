@@ -126,6 +126,39 @@ Unknown keys are errors. Stray files are errors too, in three places:
   sends a notification and parks the job until the next valid push or a manual
   trigger. Children of a parked parent are skipped.
 
+### Parents: `depends_on` and `PARENT`
+
+`depends_on` is a list because a container may build on several others. At every build prebake gives the Dockerfile
+one build arg per parent, naming the parent's image: `PARENT_<NAME>` (the container name in upper case, other characters
+become `_`: `base` is `PARENT_BASE`, `dev-go` is `PARENT_DEV_GO`), and for the **first** parent of the list also plain
+`PARENT`. The value is `<registry>/<parent>:latest`, i.e. the newest image of the parent's `default` flavor, as the Docker host
+sees the registry (`REGISTRY_HOST`). A Dockerfile has to declare the args it wants, before `FROM` if `FROM` uses them:
+
+```yaml
+depends_on: [base]                 # one parent: ARG PARENT or ARG PARENT_BASE, both work
+```
+```dockerfile
+ARG PARENT
+FROM ${PARENT}
+```
+```yaml
+depends_on: [base, tools]          # several: the first is PARENT and PARENT_BASE, every other only PARENT_<NAME>
+```
+```dockerfile
+ARG PARENT_BASE
+ARG PARENT_TOOLS
+FROM ${PARENT_TOOLS} AS tools
+FROM ${PARENT_BASE}
+COPY --from=tools /usr/local/bin/mytool /usr/local/bin/
+```
+
+`validate` warns when a parent has no matching `ARG`, and refuses two parents whose names would give the same arg
+(`a-b` and `a.b`) and a parent that declares flavors but no `default` one (its `:latest` would never exist). Scheduling
+follows from this: a parent is built before its child when both are due, a triggered child also builds parents that were
+never built, a failed parent makes its children `skipped`, and cycles are errors. A parent being rebuilt does **not** rebuild
+its children: a child picks up the new parent the next time it is **rebuilt** itself (a refresh stacks on the child's own
+previous image and does not look at the parent again).
+
 ### Containers that are removed from the config
 
 When a container (or one flavor of it) disappears from the repo, its images stay in the registry for the grace

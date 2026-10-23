@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -65,8 +64,6 @@ func (r *Runner) Ref(container, tag string) string {
 	return r.Registry + "/" + container + ":" + tag
 }
 
-var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]+`)
-
 // ParentArgs returns the build args that tell a Dockerfile where its parents
 // are: PARENT (first parent) and PARENT_<NAME> for each.
 func (r *Runner) ParentArgs(dependsOn []string) map[string]string {
@@ -76,7 +73,7 @@ func (r *Runner) ParentArgs(dependsOn []string) map[string]string {
 		if i == 0 {
 			args["PARENT"] = ref
 		}
-		args["PARENT_"+strings.ToUpper(strings.Trim(nonAlnum.ReplaceAllString(p, "_"), "_"))] = ref
+		args[config.ParentArgName(p)] = ref
 	}
 	return args
 }

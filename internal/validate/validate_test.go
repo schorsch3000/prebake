@@ -173,7 +173,7 @@ func TestDependencies(t *testing.T) {
 	if !has(r, Error, `"ghost": no such container`) || !has(r, Error, "refers to itself") {
 		t.Errorf("targets: %v", r.Issues)
 	}
-	if !has(r, Warning, "no 'ARG PARENT'") {
+	if !has(r, Warning, "neither 'ARG PARENT' nor 'ARG PARENT_GHOST'") && !has(r, Warning, "declares neither 'ARG PARENT'") {
 		t.Errorf("dev has depends_on without ARG PARENT: %v", r.Issues)
 	}
 }
@@ -318,5 +318,53 @@ func TestCopyDotCopiesEverythingAndSaysSo(t *testing.T) {
 	m["containers/dev/Dockerfile"] = "FROM debian\nADD ./ /app\n"
 	if r := FS(repo(m)); r.Errors() != 0 || !has(r, Warning, "copies the whole directory") {
 		t.Errorf("ADD ./: %v", r.Issues)
+	}
+}
+
+func parentsRepo(depends []string, dockerfile string) fstest.MapFS {
+	m := base()
+	for _, d := range []string{"alpha", "beta", "a-b", "a.b"} {
+		m["containers/"+d+"/Dockerfile"] = "FROM debian\n"
+		m["containers/"+d+"/container.yaml"] = "tests: [\"true\"]\n"
+	}
+	yaml := "tests: [\"true\"]\ndepends_on: [" + strings.Join(depends, ", ") + "]\n"
+	m["containers/child/Dockerfile"] = dockerfile
+	m["containers/child/container.yaml"] = yaml
+	return repo(m)
+}
+
+func TestParentArgsInTheDockerfile(t *testing.T) {
+	warns := func(r *Result) []string {
+		var w []string
+		for _, i := range r.Issues {
+			if i.Severity == Warning && strings.Contains(i.Msg, "depends_on") && strings.HasPrefix(i.File, "containers/child/") {
+				w = append(w, i.Msg)
+			}
+		}
+		return w
+	}
+	for _, c := range []struct {
+		name       string
+		depends    []string
+		dockerfile string
+		wantWarn   string // substring, "" for none
+	}{
+		{"plain PARENT for one parent", []string{"alpha"}, "ARG PARENT\nFROM ${PARENT}\n", ""},
+		{"PARENT_<NAME> for one parent", []string{"alpha"}, "ARG PARENT_ALPHA\nFROM ${PARENT_ALPHA}\n", ""},
+		{"no parent arg at all", []string{"alpha"}, "FROM debian\n", "neither 'ARG PARENT' nor 'ARG PARENT_ALPHA'"},
+		{"two parents, both named", []string{"alpha", "beta"}, "ARG PARENT_ALPHA\nARG PARENT_BETA\nFROM ${PARENT_ALPHA}\nFROM ${PARENT_BETA} AS b\n", ""},
+		{"two parents, first as PARENT, second named", []string{"alpha", "beta"}, "ARG PARENT\nARG PARENT_BETA\nFROM ${PARENT}\n", ""},
+		{"two parents but only PARENT", []string{"alpha", "beta"}, "ARG PARENT\nFROM ${PARENT}\n", "passed as PARENT_BETA only"},
+		{"declared with a default", []string{"alpha"}, "ARG PARENT=x\nFROM ${PARENT}\n", ""},
+	} {
+		w := warns(FS(parentsRepo(c.depends, c.dockerfile)))
+		if c.wantWarn == "" && len(w) != 0 || c.wantWarn != "" && !strings.Contains(strings.Join(w, "|"), c.wantWarn) {
+			t.Errorf("%s: warnings %v, want %q", c.name, w, c.wantWarn)
+		}
+	}
+	// two containers whose names map to the same build arg cannot both be parents
+	r := FS(parentsRepo([]string{"a-b", "a.b"}, "ARG PARENT_A_B\nFROM ${PARENT_A_B}\n"))
+	if !has(r, Error, "would both be passed as PARENT_A_B") {
+		t.Errorf("collision: %v", r.Issues)
 	}
 }

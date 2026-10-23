@@ -255,8 +255,8 @@ func (r *Result) container(fsys fs.FS, name string) *container {
 	}
 
 	referenced, copiesAll := r.checkCopies(fsys, dir, dfPath, df)
-	if cfg != nil && len(cfg.DependsOn) > 0 && df != nil && !declaresArg(df, "PARENT") {
-		r.add(Warning, dfPath, 0, "depends_on is set but the Dockerfile has no 'ARG PARENT' to receive the parent image")
+	if cfg != nil && len(cfg.DependsOn) > 0 && df != nil {
+		r.checkParentArgs(dfPath, cfgPath, data, cfg.DependsOn, df)
 	}
 	var extra []string
 	if cfg != nil {
@@ -270,6 +270,30 @@ func (r *Result) container(fsys fs.FS, name string) *container {
 		return nil
 	}
 	return &container{name: name, cfg: cfg}
+}
+
+// checkParentArgs checks that the Dockerfile can receive the parents' images: the first parent
+// arrives as PARENT and as PARENT_<NAME>, every further one only as PARENT_<NAME>.
+func (r *Result) checkParentArgs(dfPath, cfgPath string, cfgData []byte, parents []string, df []instruction) {
+	byArg := map[string]string{}
+	for _, p := range parents {
+		arg := config.ParentArgName(p)
+		if other, ok := byArg[arg]; ok && other != p {
+			r.add(Error, cfgPath, keyLine(cfgData, "depends_on"), "depends_on %q and %q would both be passed as %s; rename one of the containers", other, p, arg)
+		}
+		byArg[arg] = p
+	}
+	for i, p := range parents {
+		arg := config.ParentArgName(p)
+		switch {
+		case declaresArg(df, arg):
+		case i == 0 && declaresArg(df, "PARENT"):
+		case i == 0:
+			r.add(Warning, dfPath, 0, "depends_on %q, but the Dockerfile declares neither 'ARG PARENT' nor 'ARG %s' to receive its image", p, arg)
+		default:
+			r.add(Warning, dfPath, 0, "depends_on %q is passed as %s only, and the Dockerfile has no 'ARG %s' (plain PARENT is the first parent)", p, arg, arg)
+		}
+	}
 }
 
 func declaresArg(df []instruction, name string) bool {

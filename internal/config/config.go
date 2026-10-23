@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -70,6 +71,16 @@ type Container struct {
 
 type Flavor struct {
 	Args map[string]string `yaml:"args"`
+}
+
+var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]+`)
+
+// ParentArgName is the build arg that carries the image of one parent to a Dockerfile:
+// PARENT_ plus the container name in upper case, every run of other characters becoming "_"
+// ("base" -> PARENT_BASE, "dev-go.v2" -> PARENT_DEV_GO_V2). The first parent is also passed as
+// plain PARENT.
+func ParentArgName(container string) string {
+	return "PARENT_" + strings.ToUpper(strings.Trim(nonAlnum.ReplaceAllString(container, "_"), "_"))
 }
 
 // DefaultFlavor is used when a container declares no flavors.

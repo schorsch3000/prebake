@@ -243,3 +243,13 @@ func TestPruneRemovedDefaultsAndOverrides(t *testing.T) {
 		t.Errorf("overrides: %+v %v", g.Registry, err)
 	}
 }
+
+func TestParentArgName(t *testing.T) {
+	for in, want := range map[string]string{
+		"base": "PARENT_BASE", "dev-go": "PARENT_DEV_GO", "tools.v2": "PARENT_TOOLS_V2", "a--b": "PARENT_A_B", "go1": "PARENT_GO1",
+	} {
+		if got := ParentArgName(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+}
