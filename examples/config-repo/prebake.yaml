@@ -1,0 +1,20 @@
+# Global config of a prebake config repo.
+# Build windows (host local time, set TZ on the daemon). Jobs only start inside a
+# slot; a job that would become due before the next slot runs in this one.
+slots:
+  - "02:00-06:00"
+
+defaults:
+  rebuild_interval: 7d   # full rebuild: --no-cache --pull, resets accumulated layers
+  refresh_interval: 1d   # cheap: previous image + refresh_cmd
+
+retry_delay: 15m         # a failed job is retried once after this, then parked
+keep: 5                  # date-tagged images kept per container and flavor (ceiling)
+
+registry:
+  gc_slot_only: true     # run garbage collection only inside a slot
+
+notify:
+  pushover:
+    priority_failure: 1  # -2 (silent) .. 1 (high)
+    priority_recovery: -1

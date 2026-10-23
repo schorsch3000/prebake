@@ -304,8 +304,10 @@ parked/retry state. Logs go to stdout; build logs are kept per job (bounded).
 - ports: `5000:5000` (read-only registry), `127.0.0.1:5001:5001` (write),
   `8080:8080` (status).
 - env: `REPO_URL` (required), optional Pushover and TLS.
-- Docker socket access is root-equivalent on the host; an optional compose
-  profile puts `docker-socket-proxy` in front, allowing only build/image/push.
+- Docker socket access is root-equivalent on the host; see the README. A
+  `docker-socket-proxy` in front of it is not supported in v1: buildx needs
+  endpoints (session/grpc) that such proxies handle inconsistently, and it is
+  untested here.
 
 ## 16. Implementation
 

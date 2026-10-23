@@ -79,3 +79,15 @@ jobs:
         run: |
           docker run --rm --entrypoint sh prebake:local -c \
             'git --version && ssh -V && docker --version && docker buildx version'
+
+  e2e:
+    name: compose end-to-end
+    runs-on: ubuntu-latest
+    needs: image
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+      - name: run the daemon from compose against a local repo
+        run: scripts/ci-e2e.sh

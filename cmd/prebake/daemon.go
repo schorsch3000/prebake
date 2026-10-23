@@ -32,6 +32,7 @@ type daemonConfig struct {
 	RepoURL      string
 	Branch       string
 	PollInterval time.Duration
+	Jitter       time.Duration // max start offset after a slot opens; 0 disables
 	DataDir      string
 	ReadAddr     string
 	WriteAddr    string
@@ -57,6 +58,7 @@ func parseDaemonConfig(args []string, getenv func(string) string, stderr io.Writ
 	fs.StringVar(&c.RepoURL, "repo-url", env("REPO_URL", ""), "git URL of the config repo (REPO_URL)")
 	fs.StringVar(&c.Branch, "repo-branch", env("REPO_BRANCH", "main"), "branch to follow (REPO_BRANCH)")
 	poll := fs.String("poll", env("POLL_INTERVAL", "5m"), "how often to fetch the repo (POLL_INTERVAL)")
+	jitter := fs.String("jitter", env("JITTER", "15m"), "max random start offset after a slot opens, 0 to disable (JITTER)")
 	fs.StringVar(&c.DataDir, "data-dir", env("DATA_DIR", "/data"), "state, keys, checkouts and registry storage (DATA_DIR)")
 	fs.StringVar(&c.ReadAddr, "read-addr", env("READ_ADDR", ":5000"), "read-only registry listener (READ_ADDR)")
 	fs.StringVar(&c.WriteAddr, "write-addr", env("WRITE_ADDR", ":5001"), "registry write listener, keep it off the network (WRITE_ADDR)")
@@ -77,6 +79,9 @@ func parseDaemonConfig(args []string, getenv func(string) string, stderr io.Writ
 		return nil, fmt.Errorf("POLL_INTERVAL: %w", err)
 	}
 	c.PollInterval = d
+	if c.Jitter, err = time.ParseDuration(*jitter); err != nil || c.Jitter < 0 {
+		return nil, fmt.Errorf("JITTER %q: want a non-negative duration such as 15m or 0", *jitter)
+	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		return nil, errors.New("TLS_CERT and TLS_KEY must be set together")
 	}
@@ -175,7 +180,11 @@ func runDaemon(ctx context.Context, cfg *daemonConfig, log *slog.Logger) error {
 		log.Info("Pushover notifications disabled (set PUSHOVER_TOKEN and PUSHOVER_USER to enable)")
 	}
 	runner := &build.Runner{Docker: &build.CLI{}, Registry: cfg.RegistryHost}
-	d := daemon.New(daemon.Options{PollInterval: cfg.PollInterval, Logger: log}, src, runner,
+	jitter := cfg.Jitter
+	if jitter == 0 {
+		jitter = -1 // Options: zero means "default", negative disables
+	}
+	d := daemon.New(daemon.Options{PollInterval: cfg.PollInterval, Jitter: jitter, Logger: log}, src, runner,
 		&daemon.LocalRegistry{Server: reg, Client: &registry.Client{Base: "http://127.0.0.1:" + writePort}},
 		store, notifier)
 

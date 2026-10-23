@@ -203,6 +203,9 @@ func TestParseDaemonConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if c.Jitter != 15*time.Minute {
+		t.Errorf("jitter default: %v", c.Jitter)
+	}
 	if c.Branch != "main" || c.PollInterval != 5*time.Minute || c.DataDir != "/data" || c.ReadAddr != ":5000" ||
 		c.WriteAddr != ":5001" || c.StatusAddr != ":8080" || c.RegistryHost != "localhost:5001" {
 		t.Errorf("defaults: %+v", c)
@@ -214,6 +217,9 @@ func TestParseDaemonConfig(t *testing.T) {
 	if err != nil || c.Branch != "dev" || c.PollInterval != 30*time.Second || c.DataDir != "/x" || c.RegistryHost != "localhost:6001" {
 		t.Errorf("%+v %v", c, err)
 	}
+	if c, err := parseDaemonConfig(nil, env(map[string]string{"REPO_URL": "u", "JITTER": "0s"}), &sink); err != nil || c.Jitter != 0 {
+		t.Errorf("jitter 0: %+v %v", c, err)
+	}
 	c, _ = parseDaemonConfig(nil, env(map[string]string{"REPO_URL": "u", "REGISTRY_HOST": "host.docker.internal:5001"}), &sink)
 	if c.RegistryHost != "host.docker.internal:5001" {
 		t.Errorf("REGISTRY_HOST: %q", c.RegistryHost)
@@ -223,6 +229,7 @@ func TestParseDaemonConfig(t *testing.T) {
 		"zero poll":     {"REPO_URL": "u", "POLL_INTERVAL": "0s"},
 		"cert only":     {"REPO_URL": "u", "TLS_CERT": "c.pem"},
 		"bad writeaddr": {"REPO_URL": "u", "WRITE_ADDR": "nonsense"},
+		"bad jitter":    {"REPO_URL": "u", "JITTER": "-5m"},
 	} {
 		if _, err := parseDaemonConfig(nil, env(e), &sink); err == nil {
 			t.Errorf("%s must fail", name)

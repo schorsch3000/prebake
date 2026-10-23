@@ -1,0 +1,14 @@
+# Used by scripts/ci-e2e.sh: points the daemon at a local bare repo instead of a
+# remote one and makes it poll quickly.
+services:
+  prebake:
+    environment:
+      REPO_URL: /origin.git
+      POLL_INTERVAL: 5s
+      JITTER: 0s
+      # the mounted repo belongs to the runner user, not to root in the container
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: "*"
+    volumes:
+      - ${CI_ORIGIN:-/tmp/ci-origin.git}:/origin.git:ro

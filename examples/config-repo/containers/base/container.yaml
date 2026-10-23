@@ -1,0 +1,4 @@
+refresh_cmd: "apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*"
+tests:
+  - "git --version"
+  - "jq --version"

@@ -1,30 +1,37 @@
 # prebake: set REPO_URL, then `docker compose up -d --build`.
 # On first start the daemon prints its SSH public key (also: `docker compose exec prebake prebake show-key`).
-# Add it as a read-only deploy key to the config repo.
+# Add it as a read-only deploy key to the config repo. See README.md.
 services:
   prebake:
     build: .
     image: prebake:local
     restart: unless-stopped
     environment:
-      REPO_URL: ${REPO_URL:?set REPO_URL to the config repo, e.g. git@host:me/prebake-config.git}
+      REPO_URL: ${REPO_URL:?set REPO_URL to the config repo, e.g. git@github.com:me/prebake-config.git}
       REPO_BRANCH: ${REPO_BRANCH:-main}
       POLL_INTERVAL: ${POLL_INTERVAL:-5m}
-      TZ: ${TZ:-UTC}
+      JITTER: ${JITTER:-15m}   # builds start at a random offset within this after a slot opens
+      TZ: ${TZ:-UTC}           # build slots are interpreted in this time zone
       PUSHOVER_TOKEN: ${PUSHOVER_TOKEN:-}
       PUSHOVER_USER: ${PUSHOVER_USER:-}
-      # TLS for the read-only registry listener; mount certs below to enable.
+      # TLS for the read-only registry listener: mount the files below and set both.
       TLS_CERT: ${TLS_CERT:-}
       TLS_KEY: ${TLS_KEY:-}
     ports:
-      - "5000:5000"            # registry, read-only, external
-      - "127.0.0.1:5001:5001"  # registry, write; loopback only, the host dockerd pushes here
-      - "8080:8080"            # status / API
+      - "5000:5000"            # registry, read-only, for everybody
+      - "127.0.0.1:5001:5001"  # registry, write: loopback ONLY, the host dockerd pushes here
+      - "8080:8080"            # status page and control API (no authentication)
     volumes:
       - prebake-data:/data
-      # Root-equivalent on the host. See docs/design.md §15 for the socket-proxy option.
+      # Root-equivalent on the host. See README.md, "Security".
       - /var/run/docker.sock:/var/run/docker.sock
       # - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "prebake", "status", "--url", "http://127.0.0.1:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 volumes:
   prebake-data:

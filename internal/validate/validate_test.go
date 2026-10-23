@@ -226,3 +226,11 @@ func TestPushoverPriorityRange(t *testing.T) {
 		t.Errorf("valid priorities rejected: %v", r.Issues)
 	}
 }
+
+// The example config repo in examples/ must stay valid.
+func TestExampleConfigRepoIsValid(t *testing.T) {
+	r := Dir("../../examples/config-repo")
+	if len(r.Issues) != 0 {
+		t.Fatalf("examples/config-repo: %v", r.Issues)
+	}
+}
