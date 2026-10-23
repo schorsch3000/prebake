@@ -9,6 +9,6 @@ test:
 	go test ./...
 # needs Docker and a registry on localhost:5001: docker run -d -p 5001:5000 registry:2
 test-integration:
-	go test -tags integration -count=1 -v ./internal/build/
+	go test -tags integration -count=1 -v ./internal/build/ ./internal/registry/
 lint: vet
 	@if ls scripts/*.sh >/dev/null 2>&1; then shellcheck scripts/*.sh; fi
