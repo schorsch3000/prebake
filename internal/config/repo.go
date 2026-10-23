@@ -12,6 +12,7 @@ type Repo struct {
 	Dir        string
 	Global     *Global
 	Containers map[string]*Container
+	hashes     map[string]string // "<container>:<flavor>" -> InputsHash
 }
 
 // LoadRepo loads prebake.yaml and every container config under dir. It does
@@ -21,7 +22,7 @@ func LoadRepo(dir string) (*Repo, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Repo{Dir: dir, Global: g, Containers: map[string]*Container{}}
+	r := &Repo{Dir: dir, Global: g, Containers: map[string]*Container{}, hashes: map[string]string{}}
 	entries, err := os.ReadDir(filepath.Join(dir, ContainersDir))
 	if err != nil {
 		return nil, err
@@ -35,9 +36,19 @@ func LoadRepo(dir string) (*Repo, error) {
 			return nil, fmt.Errorf("container %s: %w", e.Name(), err)
 		}
 		r.Containers[e.Name()] = c
+		for _, f := range c.FlavorNames() {
+			h, err := InputsHash(filepath.Join(dir, ContainersDir, e.Name()), c, f)
+			if err != nil {
+				return nil, fmt.Errorf("container %s: %w", e.Name(), err)
+			}
+			r.hashes[e.Name()+":"+f] = h
+		}
 	}
 	return r, nil
 }
+
+// InputsHash is the fingerprint of the build inputs of a container flavor in this checkout.
+func (r *Repo) InputsHash(container, flavor string) string { return r.hashes[container+":"+flavor] }
 
 // ContainerDir is the build context of a container.
 func (r *Repo) ContainerDir(name string) string {

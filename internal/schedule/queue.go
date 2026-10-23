@@ -147,17 +147,6 @@ func (q *Queue) Trigger(k Key, kind Kind) {
 	q.enqueue(k, kind, true)
 }
 
-// EnqueueNow queues a job that ignores slots, without unparking: a parked job stays parked
-// (only a push or a manual trigger releases it). Used for the startup catch-up.
-func (q *Queue) EnqueueNow(k Key, kind Kind) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if e := q.jobs[k]; e != nil && e.status == Parked {
-		return
-	}
-	q.enqueue(k, kind, true)
-}
-
 // UnparkAll re-queues every parked and skipped job; call it after a valid push.
 func (q *Queue) UnparkAll() {
 	q.mu.Lock()
@@ -215,11 +204,13 @@ func (q *Queue) parentPending(container string) bool {
 }
 
 // Next returns the next job to run and marks it Building, or false if nothing
-// is runnable. Only one job builds at a time. Scheduled (non-manual) jobs are
-// only runnable when inSlot; jobs waiting for their retry delay are skipped
-// until it has passed; a child never starts while a parent has a pending job.
-// Children of a parked parent are marked Skipped.
-func (q *Queue) Next(now time.Time, inSlot bool) (Job, bool) {
+// is runnable. Only one job builds at a time. Manual jobs always run; other jobs
+// run when allowed(key) says so (nil allows everything): the daemon allows a job
+// inside a slot, or outside one when it is needed now (absent, changed, overdue).
+// Jobs waiting for their retry delay are skipped until it has passed; a child
+// never starts while a parent has a pending job. Children of a parked parent are
+// marked Skipped.
+func (q *Queue) Next(now time.Time, allowed func(Key) bool) (Job, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.building != nil {
@@ -232,7 +223,7 @@ func (q *Queue) Next(now time.Time, inSlot bool) (Job, bool) {
 			q.removeFromOrder(k)
 			continue
 		}
-		if !e.Manual && !inSlot {
+		if !e.Manual && allowed != nil && !allowed(k) {
 			continue
 		}
 		if now.Before(e.RetryAt) {

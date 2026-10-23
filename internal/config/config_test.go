@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -142,5 +144,91 @@ func TestPushoverPriorityDefaultsAndExplicitZero(t *testing.T) {
 	g, err = ParseGlobal("g.yaml", []byte("notify:\n  pushover:\n    priority_failure: 0\n    priority_recovery: -2\n"))
 	if err != nil || *g.Notify.Pushover.PriorityFailure != 0 || *g.Notify.Pushover.PriorityRecovery != -2 {
 		t.Errorf("explicit: %+v %v", g.Notify, err)
+	}
+}
+
+func TestInputsHash(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string, mode os.FileMode) {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
+		os.Chmod(p, mode)
+	}
+	write("Dockerfile", "FROM debian\n", 0o644)
+	write("scripts/setup.sh", "#!/bin/sh\n", 0o644)
+	write(ContainerFile, "tests: [\"true\"]\n", 0o644)
+	c := &Container{Flavors: map[string]Flavor{"default": {}, "cuda": {Args: map[string]string{"CUDA": "1"}}}}
+	hash := func(c *Container, flavor string) string {
+		t.Helper()
+		h, err := InputsHash(dir, c, flavor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	base := hash(c, "default")
+	if base != hash(c, "default") {
+		t.Fatal("hash must be stable")
+	}
+	if hash(c, "cuda") == base {
+		t.Error("flavors differ in name and args")
+	}
+	// scheduler/test settings and container.yaml do not make an image stale
+	write(ContainerFile, "tests: [\"false\"]\nkeep: 2\nrefresh_cmd: x\n", 0o644)
+	c2 := *c
+	c2.Keep, c2.RefreshCmd, c2.Tests = 3, "other", []string{"x"}
+	c2.RebuildInterval, c2.RefreshInterval = Duration(time.Hour), Duration(time.Hour)
+	if got := hash(&c2, "default"); got != base {
+		t.Error("container.yaml and scheduler settings must not change the hash")
+	}
+	// what ends up in the image does
+	changes := map[string]func(){
+		"Dockerfile":     func() { write("Dockerfile", "FROM debian\nRUN true\n", 0o644) },
+		"copied file":    func() { write("scripts/setup.sh", "#!/bin/sh\necho hi\n", 0o644) },
+		"executable bit": func() { write("scripts/setup.sh", "#!/bin/sh\n", 0o755) },
+		"new file":       func() { write("extra.txt", "x", 0o644) },
+		"dockerignore":   func() { write(".dockerignore", "x", 0o644) },
+	}
+	for name, change := range changes {
+		before := hash(c, "default")
+		change()
+		if hash(c, "default") == before {
+			t.Errorf("%s must change the hash", name)
+		}
+	}
+	// depends_on and build args
+	c3 := *c
+	c3.DependsOn = []string{"base"}
+	if hash(&c3, "default") == hash(c, "default") {
+		t.Error("depends_on must change the hash")
+	}
+	c4 := &Container{Flavors: map[string]Flavor{"default": {Args: map[string]string{"A": "1"}}}}
+	c5 := &Container{Flavors: map[string]Flavor{"default": {Args: map[string]string{"A": "2"}}}}
+	if hash(c4, "default") == hash(c5, "default") {
+		t.Error("build args must change the hash")
+	}
+}
+
+func TestLoadRepoComputesInputsHashes(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(rel, content string) {
+		p := filepath.Join(dir, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte(content), 0o644)
+	}
+	mk("prebake.yaml", "keep: 3\n")
+	mk("containers/a/Dockerfile", "FROM debian\n")
+	mk("containers/a/container.yaml", "flavors:\n  default: {}\n  gpu: {}\n")
+	r, err := LoadRepo(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := r.InputsHash("a", "default"), r.InputsHash("a", "gpu")
+	if a == "" || b == "" || a == b || r.InputsHash("a", "nope") != "" {
+		t.Errorf("hashes: %q %q", a, b)
 	}
 }

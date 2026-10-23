@@ -216,9 +216,6 @@ func (h *harness) sync() {
 
 func (h *harness) tick() { h.d.Tick(context.Background()) }
 
-// noCatchUp marks the startup catch-up as done, for tests of the regular slot behaviour.
-func (h *harness) noCatchUp() { h.d.catchUpDone = true }
-
 func jobState(s Status, key string) JobStatus {
 	for _, j := range s.Jobs {
 		if j.Key.String() == key {
@@ -282,14 +279,15 @@ func TestRefreshWhenDue(t *testing.T) {
 	}
 }
 
-func TestOutsideSlotNothingRunsExceptTrigger(t *testing.T) {
-	h := newHarness(t)
-	h.push("narrow slot", map[string]string{"prebake.yaml": "slots: [\"02:00-04:00\"]\nkeep: 4\n"})
+func TestNotDueWaitsForTheSlotTriggerDoesNot(t *testing.T) {
+	h := narrowSlotHarness(t) // 12:00 is outside the 02:00-04:00 slot
+	h.seedBuilt("base", schedule.Rebuild, 10*time.Hour)
+	h.seedBuilt("child", schedule.Rebuild, 10*time.Hour)
+	h.seedBuilt("solo", schedule.Rebuild, 10*time.Hour)
 	h.sync()
-	h.noCatchUp()
-	h.tick() // 12:00 is outside
+	h.tick() // nothing is due (refresh in 14h), nothing is absent
 	if got := h.b.take(); len(got) != 0 {
-		t.Fatalf("builds outside the slot: %v", got)
+		t.Fatalf("builds outside the slot with nothing due: %v", got)
 	}
 	if _, err := h.d.Trigger("base", "", schedule.Rebuild); err != nil {
 		t.Fatal(err)
@@ -298,11 +296,26 @@ func TestOutsideSlotNothingRunsExceptTrigger(t *testing.T) {
 	if got := h.b.take(); len(got) != 1 || got[0] != "base:default rebuild" {
 		t.Errorf("trigger: %v", got)
 	}
-	// slot opens: the rest runs (child; base was just built)
-	h.clk.advance(14 * time.Hour) // 02:00 next day
+	// 02:00 next day, in the slot: child and solo fall due exactly then; base (rebuilt at 12:00
+	// by the trigger) is due at 12:00, which is before the next slot, so the slot rule runs it now
+	// as well, instead of letting it run late
+	h.clk.advance(14 * time.Hour)
 	h.tick()
-	if got := h.b.take(); len(got) == 0 || got[len(got)-1] != "child:default rebuild" {
+	if got := h.b.take(); len(got) != 3 {
 		t.Errorf("in slot: %v", got)
+	}
+}
+
+func TestSlotsArePreferredNotRequired(t *testing.T) {
+	h := narrowSlotHarness(t)                           // 12:00 is outside the slot
+	h.seedBuilt("base", schedule.Rebuild, 30*time.Hour) // refresh was due 6h ago: the slot was missed
+	h.seedBuilt("child", schedule.Rebuild, 30*time.Hour)
+	h.seedBuilt("solo", schedule.Rebuild, time.Hour)
+	h.sync()
+	h.tick()
+	got := h.b.take()
+	if len(got) != 2 || got[0] != "base:default refresh" || got[1] != "child:default refresh" {
+		t.Errorf("what is overdue runs now, parent first, even outside the slot: %v", got)
 	}
 }
 
@@ -331,7 +344,6 @@ func TestRequestGCOverridesSlotOnly(t *testing.T) {
 	h := newHarness(t)
 	h.push("narrow slot", map[string]string{"prebake.yaml": "slots: [\"02:00-04:00\"]\nkeep: 4\nregistry:\n  gc_slot_only: true\n"})
 	h.sync()
-	h.noCatchUp()
 	h.tick() // 12:00, outside the slot
 	h.d.RequestGC()
 	h.tick()
@@ -496,7 +508,6 @@ func TestGCRunsAfterPruneInSlotOnly(t *testing.T) {
 	h := newHarness(t)
 	h.push("narrow slot", map[string]string{"prebake.yaml": "slots: [\"02:00-04:00\"]\nkeep: 4\nregistry:\n  gc_slot_only: true\n"})
 	h.sync()
-	h.noCatchUp()
 	h.reg.removed["base"] = []string{"default-20260101-000000"}
 	h.d.Trigger("base", "", schedule.Rebuild) // outside the slot
 	h.tick()
@@ -577,7 +588,6 @@ func TestTriggerBuildsNeverBuiltParentsFirst(t *testing.T) {
 	h := newHarness(t)
 	h.push("narrow slot", map[string]string{"prebake.yaml": "slots: [\"02:00-04:00\"]\nkeep: 4\n"})
 	h.sync()
-	h.noCatchUp()
 
 	// triggering the child while nothing was ever built: its parent has no <parent>:latest yet,
 	// so it is queued too (ignoring the slot, like the trigger itself) and built first
@@ -618,7 +628,7 @@ func TestTriggerParentsAreTransitive(t *testing.T) {
 	}
 }
 
-// --- startup catch-up -------------------------------------------------------------------
+// --- what must be built now -------------------------------------------------------------------
 
 // seedBuilt records an earlier successful build in the state store, finished `age` ago, and
 // registers its alias tag as present in the registry.
@@ -643,7 +653,7 @@ func narrowSlotHarness(t *testing.T) *harness {
 	return h
 }
 
-func TestStartupBuildsAbsentFirstThenDue(t *testing.T) {
+func TestAbsentBuiltFirstThenDue(t *testing.T) {
 	h := narrowSlotHarness(t)                             // 12:00 is outside the 02:00-04:00 slot
 	h.seedBuilt("base", schedule.Rebuild, 3*24*time.Hour) // refresh (1d) is overdue, rebuild (7d) is not
 	h.seedBuilt("child", schedule.Rebuild, time.Hour)     // fresh: not due
@@ -654,15 +664,9 @@ func TestStartupBuildsAbsentFirstThenDue(t *testing.T) {
 	if len(got) != 2 || got[0] != "solo:default rebuild" || got[1] != "base:default refresh" {
 		t.Fatalf("builds = %v, want the absent solo first, then base's refresh", got)
 	}
-	// it is a one-time catch-up: the regular rules apply from now on (outside the slot: nothing)
-	h.clk.advance(2 * 24 * time.Hour) // child and the others become due, but 12:00 is outside the slot
-	h.tick()
-	if got := h.b.take(); len(got) != 0 {
-		t.Errorf("a second tick must respect the slots again: %v", got)
-	}
 }
 
-func TestStartupBuildsParentsBeforeChildrenWithinAbsent(t *testing.T) {
+func TestAbsentParentsBeforeChildren(t *testing.T) {
 	h := narrowSlotHarness(t)
 	h.sync()
 	h.tick()
@@ -680,7 +684,7 @@ func TestStartupBuildsParentsBeforeChildrenWithinAbsent(t *testing.T) {
 	}
 }
 
-func TestStartupTreatsAMissingAliasAsAbsent(t *testing.T) {
+func TestMissingAliasCountsAsAbsent(t *testing.T) {
 	h := narrowSlotHarness(t)
 	h.seedBuilt("base", schedule.Rebuild, time.Hour)
 	h.seedBuilt("child", schedule.Rebuild, time.Hour)
@@ -695,10 +699,9 @@ func TestStartupTreatsAMissingAliasAsAbsent(t *testing.T) {
 	}
 }
 
-func TestStartupLeavesParkedJobsParked(t *testing.T) {
+func TestRestartLeavesParkedJobsParked(t *testing.T) {
 	h := narrowSlotHarness(t)
 	h.sync()
-	h.noCatchUp()
 	h.b.fail["base"] = 2
 	h.d.Trigger("base", "", schedule.Rebuild) // fails, retries once, parks
 	h.tick()
@@ -726,13 +729,128 @@ func TestStartupLeavesParkedJobsParked(t *testing.T) {
 	}
 }
 
-func TestStartupFromDiskCheckoutNeedsNoNetwork(t *testing.T) {
+func TestRestartBuildsFromTheCheckoutOnDisk(t *testing.T) {
 	h := narrowSlotHarness(t)
 	h.sync()
-	h.noCatchUp()
 	h.start() // restart with a checkout on disk, nothing built yet, and no sync before the tick
 	h.tick()
 	if got := h.b.take(); len(got) != 3 {
 		t.Errorf("catch-up from the checkout on disk: %v", got)
+	}
+}
+
+// --- images must never lag behind git ----------------------------------------------------
+
+func TestChangedDockerfileRebuildsAtOnceOutsideTheSlot(t *testing.T) {
+	h := narrowSlotHarness(t) // 12:00 is outside the slot
+	h.sync()
+	h.tick() // everything absent is built, the inputs of each build are recorded
+	if got := h.b.take(); len(got) != 3 {
+		t.Fatalf("initial builds: %v", got)
+	}
+	h.tick()
+	if got := h.b.take(); len(got) != 0 {
+		t.Fatalf("nothing changed: %v", got)
+	}
+	h.push("change base", map[string]string{"containers/base/Dockerfile": "FROM debian\nRUN echo new\n"})
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 1 || got[0] != "base:default rebuild" {
+		t.Errorf("the image is stale against git and is rebuilt now, only that one: %v", got)
+	}
+	h.tick()
+	if got := h.b.take(); len(got) != 0 {
+		t.Errorf("rebuilt once: %v", got)
+	}
+}
+
+func TestSchedulerOnlyChangesDoNotRebuild(t *testing.T) {
+	h := narrowSlotHarness(t)
+	h.sync()
+	h.tick()
+	h.b.take()
+	h.push("tune base", map[string]string{"containers/base/container.yaml": "tests: [\"false\"]\nkeep: 3\nrefresh_cmd: other\nrefresh_interval: 2d\n"})
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 0 {
+		t.Errorf("container.yaml settings do not change the image: %v", got)
+	}
+}
+
+func TestNewContainerIsBuiltImmediately(t *testing.T) {
+	h := narrowSlotHarness(t)
+	h.sync()
+	h.tick()
+	h.b.take()
+	h.push("add tools", map[string]string{
+		"containers/tools/Dockerfile":     "FROM debian\n",
+		"containers/tools/container.yaml": "tests: [\"true\"]\n",
+	})
+	h.sync()
+	h.tick() // 12:00, outside the slot
+	if got := h.b.take(); len(got) != 1 || got[0] != "tools:default rebuild" {
+		t.Errorf("an absent image must not wait for a slot: %v", got)
+	}
+}
+
+func TestChangedFlavorArgsRebuildOnlyThatFlavor(t *testing.T) {
+	h := newHarness(t)
+	h.push("flavors", map[string]string{
+		"containers/gpu/Dockerfile":     "ARG G\nFROM debian\n",
+		"containers/gpu/container.yaml": "flavors:\n  default: {}\n  cuda:\n    args: {G: \"1\"}\n",
+	})
+	h.sync()
+	h.tick()
+	h.b.take()
+	h.push("cuda args", map[string]string{
+		"containers/gpu/container.yaml": "flavors:\n  default: {}\n  cuda:\n    args: {G: \"2\"}\n",
+	})
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 1 || got[0] != "gpu:cuda rebuild" {
+		t.Errorf("builds = %v", got)
+	}
+}
+
+func TestImageBuiltBeforeHashesExistIsAdoptedNotRebuilt(t *testing.T) {
+	h := narrowSlotHarness(t)
+	h.seedBuilt("base", schedule.Rebuild, time.Hour) // no inputs hash recorded (older version)
+	h.seedBuilt("child", schedule.Rebuild, time.Hour)
+	h.seedBuilt("solo", schedule.Rebuild, time.Hour)
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 0 {
+		t.Fatalf("an unknown hash is adopted, not treated as stale: %v", got)
+	}
+	h.push("change solo", map[string]string{"containers/solo/Dockerfile": "FROM debian\nRUN true\n"})
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 1 || got[0] != "solo:default rebuild" {
+		t.Errorf("after adoption, changes are detected: %v", got)
+	}
+}
+
+func TestRefreshOfAStaleImageDoesNotHideTheStaleness(t *testing.T) {
+	h := narrowSlotHarness(t)
+	h.sync()
+	h.tick()
+	h.b.take()
+	before, _ := h.store.ImageState("base", "default")
+	h.push("change base", map[string]string{"containers/base/Dockerfile": "FROM debian\nRUN echo new\n"})
+	h.sync()
+	// a refresh that succeeds while the image is stale (queued by hand, before the scheduler
+	// got to it) stacks on the OLD image: it must not record the new inputs
+	h.d.mu.Lock()
+	repo := h.d.repo
+	h.d.mu.Unlock()
+	h.d.runJob(context.Background(), repo, schedule.Job{Key: schedule.Key{Container: "base", Flavor: "default"}, Kind: schedule.Refresh})
+	after, _ := h.store.ImageState("base", "default")
+	if after.InputsHash != before.InputsHash || after.InputsHash == "" {
+		t.Fatalf("a refresh changed the recorded inputs: %q -> %q", before.InputsHash, after.InputsHash)
+	}
+	h.b.take()
+	h.tick()
+	if got := h.b.take(); len(got) != 1 || got[0] != "base:default rebuild" {
+		t.Errorf("the image is still stale and must be rebuilt: %v", got)
 	}
 }

@@ -122,31 +122,35 @@ For each (container, flavor): `next_rebuild = last_rebuild + rebuild_interval`,
 `next_refresh = last_refresh + refresh_interval`. A rebuild resets both clocks.
 When both are due, only the rebuild runs.
 
-### 6.2 Slot rule
+### 6.2 Slots are a preference
 
-Jobs run inside slots even when not yet due, if waiting would overshoot the due
-time. At slot start `now`:
+Slots keep builds out of working hours where that is possible. They never leave an
+image absent, stale or overdue.
+
+**Needed now: runs now, slot or not**, in this priority order:
+
+1. **Absent**: never built, or the moving alias tag is missing from the registry (for
+   example a wiped registry volume).
+2. **Stale against git**: the fingerprint of the build inputs (`config.InputsHash`: all
+   files of the container directory except `container.yaml`, the flavor and its build
+   args, `depends_on`) of the active commit differs from the fingerprint recorded for the
+   last rebuild. An image must never lag behind git. Settings that only steer the
+   scheduler or the tests (intervals, `keep`, `tests`, `refresh_cmd`) do not count. A
+   refresh never records the fingerprint, since it stacks on the old image. An image
+   built before fingerprints were recorded is adopted as current instead of rebuilt.
+3. **Due**: `now >= due` for a refresh or rebuild (a missed slot, downtime, a long queue).
+
+Within a priority, older work first; the queue still builds parents before children.
+
+**Not yet due: only inside a slot**, and only when waiting would make it late:
 
 ```
-run job if  now >= due   OR   due <= start_of_next_slot
+at slot time now:  run job if  due <= start_of_next_slot
 ```
 
-i.e. a job runs in the last slot before it becomes due. Equivalently: skip only
-if the job will still not be due at the next slot start. A manual trigger runs
-immediately, ignoring slots.
-
-If the host was off during a slot, due jobs run at the next slot (catch-up).
-Slots that cross midnight (`22:00-02:00`) are supported. Jitter spreads start
-times so jobs do not all begin at slot start.
-
-### 6.2a Startup catch-up
-
-The first time the daemon has a config after a start (from the checkout on disk, or after
-the first fetch) it queues, ignoring slots and jitter: first every (container, flavor) that
-is absent, meaning never built or whose alias tag is missing from the registry, then every
-one that is due for a refresh or rebuild now (no look-ahead to the next slot). The queue's
-normal rules still apply: parents before children, one build at a time, parked jobs stay
-parked, a failed job is retried inside a slot. It runs once per process.
+i.e. a job runs early in the last slot before it becomes due, after its jitter offset
+(jitter never delays a job that is needed now). Slots that cross midnight
+(`22:00-02:00`) are supported. A manual trigger runs immediately.
 
 ### 6.3 Queue and retries
 
@@ -160,8 +164,9 @@ parked, a failed job is retried inside a slot. It runs once per process.
   (default 15 min), silently. A second consecutive failure sends a Pushover
   notification and the job is **parked** until the next push to the config repo
   or a manual trigger (CLI or API).
-- Jobs are only started inside a slot unless manually triggered; a retry that
-  falls outside the slot waits for the next one.
+- A retry of a job that is needed now (absent, stale, due) runs after `retry_delay`
+  wherever the clock is. A retry of a job that only ran early (look-ahead) waits for
+  its slot again.
 
 ## 7. Build pipeline
 

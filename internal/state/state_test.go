@@ -145,3 +145,59 @@ func TestNewerSchemaRefused(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestInputsHashRecordedOnlyWhenGivenAndAdoptedOnce(t *testing.T) {
+	s := open(t)
+	r := rec(schedule.Rebuild, true, t0)
+	r.InputsHash = "h1"
+	s.RecordJob(r)
+	if img, _ := s.ImageState("dev", "default"); img.InputsHash != "h1" {
+		t.Fatalf("%+v", img)
+	}
+	// a refresh (no hash) must not touch it
+	s.RecordJob(rec(schedule.Refresh, true, t0.Add(time.Hour)))
+	if img, _ := s.ImageState("dev", "default"); img.InputsHash != "h1" {
+		t.Errorf("refresh changed the hash: %+v", img)
+	}
+	// a failed build never changes it
+	f := rec(schedule.Rebuild, false, t0.Add(2*time.Hour))
+	f.InputsHash = "h2"
+	s.RecordJob(f)
+	if img, _ := s.ImageState("dev", "default"); img.InputsHash != "h1" {
+		t.Errorf("failed build changed the hash: %+v", img)
+	}
+	// adoption: only fills an unknown hash
+	s.SetInputsHash("dev", "default", "adopted")
+	if img, _ := s.ImageState("dev", "default"); img.InputsHash != "h1" {
+		t.Errorf("SetInputsHash must not overwrite: %+v", img)
+	}
+	old := rec(schedule.Rebuild, true, t0)
+	old.Container = "legacy"
+	s.RecordJob(old) // built without a hash
+	s.SetInputsHash("legacy", "default", "adopted")
+	if img, _ := s.ImageState("legacy", "default"); img.InputsHash != "adopted" {
+		t.Errorf("unknown hash should be adopted: %+v", img)
+	}
+}
+
+func TestMigrationAddsInputsHashToExistingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// simulate a database from before migration 2
+	s.db.Exec(`ALTER TABLE images DROP COLUMN inputs_hash`)
+	s.db.Exec(`PRAGMA user_version = 1`)
+	s.db.Exec(`INSERT INTO images (container, flavor, last_rebuild) VALUES ('old', 'default', 5)`)
+	s.Close()
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	img, err := s.ImageState("old", "default")
+	if err != nil || img.LastRebuild.IsZero() || img.InputsHash != "" {
+		t.Fatalf("%+v %v", img, err)
+	}
+}

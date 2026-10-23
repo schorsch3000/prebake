@@ -58,8 +58,74 @@ func (d *Daemon) keys() []schedule.Key {
 	return keys
 }
 
-// Tick evaluates the schedule once and runs everything that is runnable now,
-// one build at a time. It returns when the queue has nothing more to do.
+// need priorities: what must be built first. Absent images come before images that are stale
+// against git, and those before regular schedule work.
+const (
+	prioAbsent = iota
+	prioStale
+	prioSchedule
+)
+
+type candidate struct {
+	key    schedule.Key
+	kind   schedule.Kind
+	prio   int
+	due    time.Time
+	urgent bool // needed now: runs outside the slots too (look-ahead work does not)
+	why    string
+}
+
+// candidates decides, for every (container, flavor), whether work is needed and how urgent it is.
+//
+// Slots are a preference: what is needed now runs now, wherever the clock is. That is
+//   - absent: never built, or the moving tag is missing from the registry;
+//   - stale: the build inputs in the current commit differ from the ones the image was built
+//     from, so the image is not what git says (an image must never lag behind git);
+//   - due: the refresh or rebuild interval has run out (a missed slot, downtime, ...).
+//
+// Only the look-ahead (not yet due, but it would be late for the next slot) waits for a slot.
+func (d *Daemon) candidates(ctx context.Context, repo *config.Repo, now time.Time) []candidate {
+	var out []candidate
+	for _, k := range d.keys() {
+		img, err := d.store.ImageState(k.Container, k.Flavor)
+		if err != nil {
+			d.log.Error("cannot read state", "key", k, "err", err)
+			continue
+		}
+		cur := repo.InputsHash(k.Container, k.Flavor)
+		switch {
+		case img.LastRebuild.IsZero():
+			out = append(out, candidate{k, schedule.Rebuild, prioAbsent, time.Time{}, true, "never built"})
+			continue
+		case d.aliasMissing(ctx, k):
+			out = append(out, candidate{k, schedule.Rebuild, prioAbsent, time.Time{}, true, "missing from the registry"})
+			continue
+		case img.InputsHash == "" && cur != "":
+			// built before hashes were recorded: assume it matches, remember it, do not rebuild
+			if err := d.store.SetInputsHash(k.Container, k.Flavor, cur); err != nil {
+				d.log.Error("cannot record inputs hash", "key", k, "err", err)
+			}
+		case cur != "" && img.InputsHash != cur:
+			out = append(out, candidate{k, schedule.Rebuild, prioStale, img.LastRebuild, true, "build inputs changed in git"})
+			continue
+		}
+		eff := repo.Containers[k.Container].Effective(repo.Global)
+		dec := schedule.Decide(repo.Global.Slots, policyOf(eff), img.State, now, schedule.Jitter(k.String(), d.opts.Jitter))
+		if dec.Run {
+			out = append(out, candidate{k, dec.Kind, prioSchedule, dec.Due, dec.Reason == "due", dec.Reason})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].prio != out[j].prio {
+			return out[i].prio < out[j].prio
+		}
+		return out[i].due.Before(out[j].due)
+	})
+	return out
+}
+
+// Tick evaluates what is needed once and runs everything that is runnable now, one build at
+// a time. It returns when the queue has nothing more to do.
 func (d *Daemon) Tick(ctx context.Context) {
 	d.mu.Lock()
 	repo := d.repo
@@ -68,27 +134,20 @@ func (d *Daemon) Tick(ctx context.Context) {
 		return
 	}
 	d.queue.SetRetryDelay(repo.Global.RetryDelay.Std())
-	if !d.catchUpDone {
-		d.catchUpDone = true
-		d.catchUp(ctx, repo)
-	}
-	now := d.now()
-	for _, k := range d.keys() {
-		img, err := d.store.ImageState(k.Container, k.Flavor)
-		if err != nil {
-			d.log.Error("cannot read state", "key", k, "err", err)
-			continue
+	urgent := map[schedule.Key]bool{}
+	for _, c := range d.candidates(ctx, repo, d.now()) {
+		if c.urgent {
+			urgent[c.key] = true
 		}
-		eff := repo.Containers[k.Container].Effective(repo.Global)
-		dec := schedule.Decide(repo.Global.Slots, policyOf(eff), img.State, now, schedule.Jitter(k.String(), d.opts.Jitter))
-		if dec.Run {
-			d.queue.Enqueue(k, dec.Kind)
+		if st, _ := d.queue.StatusOf(c.key); st == schedule.Idle {
+			d.log.Info("queueing", "job", c.key.String(), "kind", c.kind.String(), "reason", c.why, "urgent", c.urgent)
 		}
+		d.queue.Enqueue(c.key, c.kind)
 	}
 	for ctx.Err() == nil {
-		now = d.now()
+		now := d.now()
 		_, inSlot := schedule.CurrentWindow(repo.Global.Slots, now)
-		job, ok := d.queue.Next(now, inSlot)
+		job, ok := d.queue.Next(now, func(k schedule.Key) bool { return inSlot || urgent[k] })
 		if !ok {
 			break
 		}
@@ -113,46 +172,10 @@ func (d *Daemon) RequestGC() {
 	d.Wake()
 }
 
-// catchUp runs once, when the daemon first has a config (at start from the checkout on disk,
-// or after the first fetch). Slots exist to keep builds out of working hours, but after a
-// start there is a backlog and someone is waiting for it, so it is built right away:
-// first everything that is absent (never built, or its alias tag is missing from the
-// registry), then what is due for a refresh or rebuild. Parents still go before their
-// children, and parked jobs stay parked.
-func (d *Daemon) catchUp(ctx context.Context, repo *config.Repo) {
-	type job struct {
-		key  schedule.Key
-		kind schedule.Kind
-	}
-	var absent, due []job
-	now := d.now()
-	for _, k := range d.keys() {
-		img, err := d.store.ImageState(k.Container, k.Flavor)
-		if err != nil {
-			d.log.Error("cannot read state", "key", k, "err", err)
-			continue
-		}
-		if img.LastRebuild.IsZero() || d.aliasMissing(ctx, k) {
-			absent = append(absent, job{k, schedule.Rebuild})
-			continue
-		}
-		eff := repo.Containers[k.Container].Effective(repo.Global)
-		if kind, _ := schedule.Pick(policyOf(eff), img.State, now); kind != schedule.None {
-			due = append(due, job{k, kind})
-		}
-	}
-	if len(absent)+len(due) == 0 {
-		return
-	}
-	d.log.Info("startup catch-up: building now, outside the slots", "absent", len(absent), "due", len(due))
-	for _, j := range append(absent, due...) {
-		d.queue.EnqueueNow(j.key, j.kind)
-	}
-}
-
 // aliasMissing reports whether the registry certainly lacks the moving tag of a key that the
 // state says was built (a wiped or replaced registry). Errors count as "present": a registry
-// that cannot be asked must not cause a rebuild of everything.
+// that cannot be asked must not cause a rebuild of everything. Tick is the only place that
+// pushes or prunes, so there is no half-pushed state to trip over.
 func (d *Daemon) aliasMissing(ctx context.Context, k schedule.Key) bool {
 	tags, err := d.registry.Tags(ctx, k.Container)
 	if err != nil {
@@ -265,6 +288,10 @@ func (d *Daemon) runJob(ctx context.Context, repo *config.Repo, job schedule.Job
 		Started: started, Finished: finished, OK: err == nil, Log: out.String()}
 	if res != nil {
 		rec.Kind, rec.DateTag, rec.Digest, rec.Note = res.Kind, res.DateTag, res.Digest, res.Note
+		if res.Kind == schedule.Rebuild {
+			// only a rebuild starts from the current inputs; a refresh stacks on the old image
+			rec.InputsHash = repo.InputsHash(k.Container, k.Flavor)
+		}
 	}
 	if err != nil {
 		rec.Error = err.Error()

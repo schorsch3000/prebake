@@ -137,21 +137,37 @@ func TestDecideSlotRule(t *testing.T) {
 	if d := Decide(ss, p, s, ts("2026-10-22 03:00"), 0); !d.Run || d.Kind != Refresh {
 		t.Errorf("due before next slot => run now: %+v", d)
 	}
-	// outside the slot nothing runs, even when overdue
+	// slots are a preference: an overdue job runs outside the slot too (host was off, slot
+	// missed, ...) instead of waiting up to a day for the next window
 	s = State{LastRebuild: ts("2026-01-01 00:00")}
-	if d := Decide(ss, p, s, ts("2026-10-22 12:00"), 0); d.Run || d.Reason != "outside slot" {
-		t.Errorf("outside slot: %+v", d)
+	if d := Decide(ss, p, s, ts("2026-10-22 12:00"), 0); !d.Run || d.Kind != Rebuild || d.Reason != "due" {
+		t.Errorf("overdue outside the slot must run: %+v", d)
 	}
-	// catch-up: host was off, overdue job runs at the next slot
-	if d := Decide(ss, p, s, ts("2026-10-23 02:00"), 0); !d.Run || d.Kind != Rebuild {
-		t.Errorf("catch-up: %+v", d)
+	// a job that is not due yet does not run outside a slot
+	s = State{LastRebuild: ts("2026-10-20 05:00"), LastRefresh: ts("2026-10-22 05:00")}
+	if d := Decide(ss, p, s, ts("2026-10-22 12:00"), 0); d.Run {
+		t.Errorf("not due, outside the slot: %+v", d)
+	}
+	// ... even if it becomes due before the next slot: it waits for the slot only when
+	// the slot is the last one before the due time; here it is due 10-23 05:00 and the
+	// 10-23 02:00 slot comes first, so nothing runs today at 12:00
+	if d := Decide(ss, p, s, ts("2026-10-23 01:00"), 0); d.Run {
+		t.Errorf("waiting for the slot: %+v", d)
+	}
+	if d := Decide(ss, p, s, ts("2026-10-23 02:00"), 0); !d.Run || d.Kind != Refresh {
+		t.Errorf("in the slot, before due: %+v", d)
+	}
+	// never built: due at once, anywhere
+	if d := Decide(ss, p, State{}, ts("2026-10-22 12:00"), 0); !d.Run || d.Kind != Rebuild {
+		t.Errorf("never built: %+v", d)
 	}
 }
 
 func TestDecideJitter(t *testing.T) {
 	ss := slots(t, "02:00-06:00")
-	p := Policy{RebuildInterval: day, RefreshInterval: day}
-	s := State{}
+	p := Policy{RebuildInterval: 30 * day, RefreshInterval: day}
+	// refresh due 10-23 01:00 (before the next slot): runs early in today's slot, with jitter
+	s := State{LastRebuild: ts("2026-10-01 05:00"), LastRefresh: ts("2026-10-22 01:00")}
 	if d := Decide(ss, p, s, ts("2026-10-22 02:10"), 30*time.Minute); d.Run {
 		t.Errorf("must wait for jitter: %+v", d)
 	}
@@ -161,6 +177,10 @@ func TestDecideJitter(t *testing.T) {
 	// huge jitter is capped to half the window (2h)
 	if d := Decide(ss, p, s, ts("2026-10-22 04:00"), 10*time.Hour); !d.Run {
 		t.Errorf("jitter must be capped: %+v", d)
+	}
+	// a job that is due now is never held back by jitter
+	if d := Decide(ss, p, State{}, ts("2026-10-22 02:00"), 30*time.Minute); !d.Run {
+		t.Errorf("due jobs ignore jitter: %+v", d)
 	}
 }
 
@@ -215,9 +235,15 @@ func TestNextRun(t *testing.T) {
 	if k != Refresh || !at.Equal(ts("2026-10-22 05:30")) {
 		t.Errorf("got %v %v", k, at)
 	}
-	// overdue, outside slot: next slot start
+	// overdue, outside slot: now (slots are a preference)
 	k, at = NextRun(ss, p, s, ts("2026-10-22 12:00"))
-	if k != Refresh || !at.Equal(ts("2026-10-23 02:00")) {
+	if k != Refresh || !at.Equal(ts("2026-10-22 12:00")) {
 		t.Errorf("got %v %v", k, at)
+	}
+	// not due yet: the slot in which the slot rule picks it up
+	s2 := State{LastRebuild: ts("2026-10-01 05:00"), LastRefresh: ts("2026-10-22 05:00")}
+	k, at = NextRun(ss, p, s2, ts("2026-10-22 12:00"))
+	if k != Refresh || !at.Equal(ts("2026-10-23 02:00")) {
+		t.Errorf("not due yet: got %v %v", k, at)
 	}
 }

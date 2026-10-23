@@ -99,18 +99,21 @@ by the Dockerfile, not in `extra_files`) are errors too.
 
 ### Schedule rules
 
-- Jobs start only inside a slot. A job that would become due before the next
-  slot starts runs in the current one, so images are never later than due.
-- **Startup catch-up:** when the daemon starts it does not wait for a slot. Right away it
-  builds everything that is *absent* (never built, or missing from the registry, for
-  example after the registry volume was wiped), and after that everything that is
-  already due for a refresh or rebuild. Parents still go before their children, and
-  parked jobs stay parked. This happens once per start; afterwards the slot rules apply.
-  A container that is added later by a push is built in the next slot (or trigger it).
+- **Slots are a preference, never a reason to leave an image missing or outdated.**
+  What is needed now is built now, inside a slot or not, in this order: first what is
+  *absent* (never built, or missing from the registry, e.g. after the registry volume
+  was wiped), then what is *stale against git* (the Dockerfile, a copied file, build
+  args or `depends_on` of a container changed in the active commit; changes to only
+  `tests`, `keep`, intervals or `refresh_cmd` do not count), then what is *due*
+  (an interval ran out, a slot was missed, the host was down). So a new container
+  pushed to the repo, or a changed Dockerfile, is built immediately, and so is the
+  backlog after a restart.
+- Only work that is *not yet due* waits for a slot: a job runs early in the last slot
+  before it becomes due, so images are never late. Jitter spreads those early starts.
 - A rebuild resets the refresh clock; when both are due only the rebuild runs.
 - One build at a time. A parent is built before its child when both are due. A
   parent build does not make the child due; children use the parent's `latest`.
-- A failed job is retried once after `retry_delay` (silently). A second failure
+- A failed job is retried once after `retry_delay` (silently; anywhere, if it is needed now). A second failure
   sends a notification and parks the job until the next valid push or a manual
   trigger. Children of a parked parent are skipped.
 

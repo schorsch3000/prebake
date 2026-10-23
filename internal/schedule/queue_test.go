@@ -12,9 +12,13 @@ var (
 
 func k(c string) Key { return Key{c, "default"} }
 
+// gate allows every job when inSlot, none otherwise (what the daemon does inside and outside slots
+// for jobs that are not needed right now).
+func gate(inSlot bool) func(Key) bool { return func(Key) bool { return inSlot } }
+
 func next(t *testing.T, q *Queue, now time.Time, inSlot bool) Key {
 	t.Helper()
-	j, ok := q.Next(now, inSlot)
+	j, ok := q.Next(now, gate(inSlot))
 	if !ok {
 		t.Fatalf("expected a job at %v", now)
 	}
@@ -23,7 +27,7 @@ func next(t *testing.T, q *Queue, now time.Time, inSlot bool) Key {
 
 func none(t *testing.T, q *Queue, now time.Time, inSlot bool) {
 	t.Helper()
-	if j, ok := q.Next(now, inSlot); ok {
+	if j, ok := q.Next(now, gate(inSlot)); ok {
 		t.Fatalf("unexpected job %v at %v", j.Key, now)
 	}
 }
@@ -124,7 +128,7 @@ func TestTriggerUnparks(t *testing.T) {
 	next(t, q, t0.Add(retry), true)
 	q.Fail(k("a"), t0.Add(retry), "x")
 	q.Trigger(k("a"), Rebuild)
-	j, ok := q.Next(t0.Add(retry), false)
+	j, ok := q.Next(t0.Add(retry), gate(false))
 	if !ok || j.Kind != Rebuild || !j.Manual {
 		t.Fatalf("%+v %v", j, ok)
 	}
@@ -174,7 +178,7 @@ func TestRebuildUpgradesQueuedRefresh(t *testing.T) {
 	q.Enqueue(k("a"), Refresh)
 	q.Enqueue(k("a"), Rebuild)
 	q.Enqueue(k("a"), Refresh)
-	j, _ := q.Next(t0, true)
+	j, _ := q.Next(t0, nil)
 	if j.Kind != Rebuild || len(q.Pending()) != 0 {
 		t.Errorf("%+v %v", j, q.Pending())
 	}
@@ -190,19 +194,20 @@ func TestFlavorsAreIndependentKeys(t *testing.T) {
 	none(t, q, t0, true) // child waits for any pending flavor of the parent
 }
 
-func TestEnqueueNowIgnoresSlotsButNotParking(t *testing.T) {
+func TestAllowedPredicateIsPerJob(t *testing.T) {
 	q := NewQueue(retry, nil)
-	q.EnqueueNow(k("a"), Rebuild)
-	if got := next(t, q, t0, false); got != k("a") { // not in a slot
-		t.Fatal(got)
+	q.Enqueue(k("early"), Refresh)  // look-ahead job: only inside a slot
+	q.Enqueue(k("needed"), Rebuild) // needed now: may run anywhere
+	onlyNeeded := func(key Key) bool { return key == k("needed") }
+	j, ok := q.Next(t0, onlyNeeded)
+	if !ok || j.Key != k("needed") {
+		t.Fatalf("the needed job is skipped over the gated one: %v %v", j, ok)
 	}
-	q.Fail(k("a"), t0, "x")
-	none(t, q, t0.Add(retry), false) // the retry after a failure waits for a slot again
-	next(t, q, t0.Add(retry), true)
-	q.Fail(k("a"), t0.Add(retry), "x") // parked
-	q.EnqueueNow(k("a"), Rebuild)
-	none(t, q, t0.Add(48*time.Hour), false)
-	if s, _ := q.StatusOf(k("a")); s != Parked {
-		t.Errorf("EnqueueNow must not unpark: %v", s)
+	q.Done(k("needed"))
+	if _, ok := q.Next(t0, onlyNeeded); ok {
+		t.Fatal("the gated job must wait for its slot")
+	}
+	if j, ok := q.Next(t0, nil); !ok || j.Key != k("early") { // nil: no gate
+		t.Fatalf("%v %v", j, ok)
 	}
 }

@@ -76,15 +76,23 @@ type Decision struct {
 	Reason string
 }
 
-// Decide applies the slot rule. Jobs only start inside a slot. Within a slot a
-// job runs if it is due now OR would become due before the next slot starts
-// (otherwise it would run late), i.e. it runs in the last slot before its due
-// time. jitter delays the start after the slot opens (capped to half the
-// window). A manual trigger bypasses Decide.
+// Decide applies the slot rule. Slots are a preference, not a restriction:
+//
+//   - A job that is due now runs now, inside a slot or not (a missed slot, a long
+//     downtime, a retry, a config change must not leave an image stale for a day).
+//   - A job that is not yet due runs early, inside a slot only, when it would become due
+//     before the next slot starts: it then runs in the last slot before its due time and
+//     is never late. jitter delays that early start after the slot opens (capped to half
+//     the window); it never delays a job that is due.
+//
+// A manual trigger bypasses Decide.
 func Decide(slots []config.Slot, p Policy, s State, now time.Time, jitter time.Duration) Decision {
+	if k, due := Pick(p, s, now); k != None {
+		return Decision{Run: true, Kind: k, Due: due, Reason: "due"}
+	}
 	w, ok := CurrentWindow(slots, now)
 	if !ok {
-		return Decision{Reason: "outside slot"}
+		return Decision{Reason: "not due, outside slot"}
 	}
 	if max := w.End.Sub(w.Start) / 2; jitter > max {
 		jitter = max
@@ -94,23 +102,23 @@ func Decide(slots []config.Slot, p Policy, s State, now time.Time, jitter time.D
 	}
 	horizon := NextStart(slots, now)
 	if horizon.IsZero() || horizon.Before(now) {
-		horizon = now
+		return Decision{Reason: "not due"}
 	}
 	if k, due := Pick(p, s, horizon); k != None {
-		return Decision{Run: true, Kind: k, Due: due, Reason: "due"}
+		return Decision{Run: true, Kind: k, Due: due, Reason: "due before the next slot, running in this one"}
 	}
 	return Decision{Reason: "not due before the next slot"}
 }
 
-// NextRun estimates when a job will next run: the first slot start at or after
-// the moment it must run (due time minus the slot-rule lead), for dry-run output.
+// NextRun estimates when a job will next run, for dry-run output: now if it is due,
+// otherwise the slot start in which the slot rule will pick it up.
 func NextRun(slots []config.Slot, p Policy, s State, now time.Time) (Kind, time.Time) {
 	kind, due := Rebuild, RebuildDue(p, s)
 	if d := RefreshDue(p, s); d.Before(due) {
 		kind, due = Refresh, d
 	}
 	if !due.After(now) {
-		due = now
+		return kind, now // due: runs as soon as the queue gets to it, slot or not
 	}
 	// earliest window start from which the job counts as due: the last slot
 	// start at or before `due`, but never in the past

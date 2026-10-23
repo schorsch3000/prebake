@@ -85,16 +85,15 @@ type Daemon struct {
 	notifier notify.Notifier
 	queue    *schedule.Queue
 
-	mu          sync.Mutex
-	repo        *config.Repo
-	repoSHA     string
-	repoStatus  RepoStatus
-	badSHA      string                // last commit we reported as invalid
-	failing     map[schedule.Key]bool // keys with an unreported-recovery failure
-	gcPending   bool
-	catchUpDone bool                    // the startup catch-up ran (scheduler goroutine only)
-	gcForce     bool                    // manual request: ignore gc_slot_only
-	lastRun     map[schedule.Key]string // last result summary for status
+	mu         sync.Mutex
+	repo       *config.Repo
+	repoSHA    string
+	repoStatus RepoStatus
+	badSHA     string                // last commit we reported as invalid
+	failing    map[schedule.Key]bool // keys with an unreported-recovery failure
+	gcPending  bool
+	gcForce    bool                    // manual request: ignore gc_slot_only
+	lastRun    map[schedule.Key]string // last result summary for status
 
 	backoff time.Duration // current sync retry backoff
 	wake    chan struct{}

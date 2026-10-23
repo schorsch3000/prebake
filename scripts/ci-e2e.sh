@@ -136,6 +136,14 @@ wait_for 300 "ci-child to be built" job_built ci-child
 docker pull -q localhost:$read_port/ci-child:latest
 test "$(docker run --rm localhost:$read_port/ci-child:latest cat /child)" = child
 
+echo "== a push that changes a Dockerfile makes the daemon rebuild that image (images never lag behind git)"
+printf 'FROM busybox:stable\nRUN echo base > /base\nRUN echo v2 > /v2\n' > "$work/w/containers/ci-demo/Dockerfile"
+git -C "$work/w" add -A
+git -C "$work/w" commit -q -m "ci-demo v2"
+git -C "$work/w" push -q origin HEAD:main
+demo_has_v2() { docker pull -q "localhost:$read_port/ci-demo:latest" && docker run --rm "localhost:$read_port/ci-demo:latest" test -f /v2; }
+wait_for 300 "ci-demo to be rebuilt from the changed Dockerfile" demo_has_v2
+
 echo "== an invalid push is rejected and the last good commit stays active"
 active=$(curl -fsS "$status" | jq -r .repo.active)
 echo stray > "$work/w/containers/ci-demo/stray.txt"

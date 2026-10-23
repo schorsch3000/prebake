@@ -46,6 +46,8 @@ var migrations = []string{
 		error TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (container, flavor)
 	);`,
+	// 2: fingerprint of the build inputs (config.InputsHash) of the last successful build
+	`ALTER TABLE images ADD COLUMN inputs_hash TEXT NOT NULL DEFAULT '';`,
 }
 
 // Open opens (and migrates) the database at path; ":memory:" works for tests.
@@ -125,6 +127,10 @@ type JobRecord struct {
 	DateTag, Digest   string
 	Note              string
 	Log               string
+	// InputsHash is the config.InputsHash the image was built from. Set it only for rebuilds:
+	// a refresh stacks on the previous image and says nothing about the current inputs. Empty
+	// leaves the stored value alone.
+	InputsHash string
 }
 
 func tail(s string, n int) string {
@@ -176,6 +182,12 @@ func (s *Store) RecordJob(r JobRecord) (int64, error) {
 			nano(r.Finished), r.DateTag, r.Digest, r.Container, r.Flavor); err != nil {
 			return 0, err
 		}
+		if r.InputsHash != "" {
+			if _, err := tx.Exec(`UPDATE images SET inputs_hash = ? WHERE container = ? AND flavor = ?`,
+				r.InputsHash, r.Container, r.Flavor); err != nil {
+				return 0, err
+			}
+		}
 	}
 	if _, err := tx.Exec(`DELETE FROM jobs WHERE container = ? AND flavor = ? AND id NOT IN
 		(SELECT id FROM jobs WHERE container = ? AND flavor = ? ORDER BY id DESC LIMIT ?)`,
@@ -190,14 +202,15 @@ type Image struct {
 	Container, Flavor string
 	schedule.State
 	DateTag, Digest string
+	InputsHash      string // empty: unknown (built before hashes were recorded)
 }
 
 // ImageState returns the scheduling state; a never-built image has zero times.
 func (s *Store) ImageState(container, flavor string) (Image, error) {
 	img := Image{Container: container, Flavor: flavor}
 	var rb, rf int64
-	err := s.db.QueryRow(`SELECT last_rebuild, last_refresh, date_tag, digest FROM images WHERE container = ? AND flavor = ?`,
-		container, flavor).Scan(&rb, &rf, &img.DateTag, &img.Digest)
+	err := s.db.QueryRow(`SELECT last_rebuild, last_refresh, date_tag, digest, inputs_hash FROM images WHERE container = ? AND flavor = ?`,
+		container, flavor).Scan(&rb, &rf, &img.DateTag, &img.Digest, &img.InputsHash)
 	if err == sql.ErrNoRows {
 		return img, nil
 	}
@@ -206,6 +219,14 @@ func (s *Store) ImageState(container, flavor string) (Image, error) {
 	}
 	img.LastRebuild, img.LastRefresh = fromNano(rb), fromNano(rf)
 	return img, nil
+}
+
+// SetInputsHash records the inputs of an image whose hash was unknown, without touching
+// anything else. It does nothing when a hash is already stored.
+func (s *Store) SetInputsHash(container, flavor, hash string) error {
+	_, err := s.db.Exec(`UPDATE images SET inputs_hash = ? WHERE container = ? AND flavor = ? AND inputs_hash = ''`,
+		hash, container, flavor)
+	return err
 }
 
 // History returns the newest jobs first.
