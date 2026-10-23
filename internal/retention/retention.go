@@ -24,12 +24,12 @@ func Parse(tag string) (flavor, stamp string, ok bool) {
 
 // Plan returns the tags to delete from one repository, oldest first.
 //
-// Per flavor the newest keep date tags survive. promoted maps a flavor to the
-// date tag its alias currently points to; that tag survives even if it is not
-// among the newest, so Plan may leave more than keep tags for a flavor.
+// Per flavor the newest keep date tags survive. Tags in protected (the date
+// tags the aliases currently point to) survive even if they are not among the
+// newest, so Plan may leave more than keep tags for a flavor.
 // Non-date tags are ignored. keep < 1 deletes nothing (a safety net; the
 // validator already requires keep >= 1).
-func Plan(tags []string, keep int, promoted map[string]string) []string {
+func Plan(tags []string, keep int, protected map[string]bool) []string {
 	if keep < 1 {
 		return nil
 	}
@@ -40,7 +40,7 @@ func Plan(tags []string, keep int, promoted map[string]string) []string {
 		}
 	}
 	var del []string
-	for flavor, ts := range byFlavor {
+	for _, ts := range byFlavor {
 		// the stamp is fixed-width and sorts chronologically
 		sort.Slice(ts, func(i, j int) bool {
 			_, a, _ := Parse(ts[i])
@@ -48,7 +48,7 @@ func Plan(tags []string, keep int, promoted map[string]string) []string {
 			return a > b
 		})
 		for i, t := range ts {
-			if i < keep || t == promoted[flavor] {
+			if i < keep || protected[t] {
 				continue
 			}
 			del = append(del, t)

@@ -75,6 +75,8 @@ func newApp(ctx context.Context, c Config) (http.Handler, error) {
 	}
 	cfg.HTTP.Addr = c.ReadAddr // unused: we run our own servers, but the field must be set
 	cfg.HTTP.Secret = hex.EncodeToString(secret)
+	// defaults normally come from the YAML parser; built in code the page limit would be 0
+	cfg.Catalog.MaxEntries = 1000
 	return handlers.NewApp(ctx, cfg), nil
 }
 

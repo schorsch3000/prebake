@@ -52,14 +52,14 @@ func TestPlanDeletesOldestFirstAcrossFlavors(t *testing.T) {
 
 func TestPlanProtectsPromoted(t *testing.T) {
 	tags := []string{"default-20261001-020000", "default-20261002-020000", "default-20261003-020000"}
-	got := Plan(tags, 1, map[string]string{"default": "default-20261001-020000"})
+	got := Plan(tags, 1, map[string]bool{"default-20261001-020000": true})
 	want := []string{"default-20261002-020000"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v want %v", got, want)
 	}
-	// protection is per flavor: another flavor's promoted tag does not help
-	got = Plan(tags, 1, map[string]string{"cuda": "default-20261001-020000"})
-	if len(got) != 2 {
+	// several protected tags (aliases of different flavors or identical digests)
+	got = Plan(tags, 1, map[string]bool{"default-20261001-020000": true, "default-20261002-020000": true})
+	if len(got) != 0 {
 		t.Errorf("got %v", got)
 	}
 }
