@@ -40,9 +40,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdShowKey(args[1:], stdout, stderr)
 	case "daemon":
 		return cmdDaemon(args[1:], stdout, stderr)
-	case "status", "trigger", "dry-run", "gc":
-		fmt.Fprintf(stderr, "prebake %s: not implemented\n", args[0])
-		return 2
+	case "status":
+		return cmdStatus(args[1:], stdout, stderr)
+	case "dry-run":
+		return cmdDryRun(args[1:], stdout, stderr)
+	case "trigger":
+		return cmdTrigger(args[1:], stdout, stderr)
+	case "gc":
+		return cmdGC(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "prebake: unknown command %q\n\n%s", args[0], usage)
 		return 2

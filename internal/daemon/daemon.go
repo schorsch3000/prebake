@@ -90,6 +90,7 @@ type Daemon struct {
 	badSHA     string                // last commit we reported as invalid
 	failing    map[schedule.Key]bool // keys with an unreported-recovery failure
 	gcPending  bool
+	gcForce    bool                    // manual request: ignore gc_slot_only
 	lastRun    map[schedule.Key]string // last result summary for status
 
 	backoff time.Duration // current sync retry backoff

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/schorsch3000/prebake/internal/api"
 	"github.com/schorsch3000/prebake/internal/build"
 	"github.com/schorsch3000/prebake/internal/daemon"
 	"github.com/schorsch3000/prebake/internal/gitsync"
@@ -33,6 +35,7 @@ type daemonConfig struct {
 	DataDir      string
 	ReadAddr     string
 	WriteAddr    string
+	StatusAddr   string
 	RegistryHost string // host:port the Docker host uses to push to the write listener
 	TLSCert      string
 	TLSKey       string
@@ -57,6 +60,7 @@ func parseDaemonConfig(args []string, getenv func(string) string, stderr io.Writ
 	fs.StringVar(&c.DataDir, "data-dir", env("DATA_DIR", "/data"), "state, keys, checkouts and registry storage (DATA_DIR)")
 	fs.StringVar(&c.ReadAddr, "read-addr", env("READ_ADDR", ":5000"), "read-only registry listener (READ_ADDR)")
 	fs.StringVar(&c.WriteAddr, "write-addr", env("WRITE_ADDR", ":5001"), "registry write listener, keep it off the network (WRITE_ADDR)")
+	fs.StringVar(&c.StatusAddr, "status-addr", env("STATUS_ADDR", ":8080"), "status page and control API listener (STATUS_ADDR)")
 	fs.StringVar(&c.RegistryHost, "registry-host", env("REGISTRY_HOST", ""), "host:port the Docker host pushes to (default localhost:<write port>) (REGISTRY_HOST)")
 	fs.StringVar(&c.TLSCert, "tls-cert", env("TLS_CERT", ""), "TLS certificate for the read-only listener (TLS_CERT)")
 	fs.StringVar(&c.TLSKey, "tls-key", env("TLS_KEY", ""), "TLS key (TLS_KEY)")
@@ -175,7 +179,22 @@ func runDaemon(ctx context.Context, cfg *daemonConfig, log *slog.Logger) error {
 		&daemon.LocalRegistry{Server: reg, Client: &registry.Client{Base: "http://127.0.0.1:" + writePort}},
 		store, notifier)
 
-	errc := make(chan error, 1)
+	statusLn, err := net.Listen("tcp", cfg.StatusAddr)
+	if err != nil {
+		return fmt.Errorf("status listener: %w", err)
+	}
+	statusSrv := &http.Server{
+		Handler:           api.Handler(d, api.KeyInfo{PublicLine: id.PublicLine, Fingerprint: id.Fingerprint}, nil),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	defer statusSrv.Close()
+	log.Info("status API listening", "addr", statusLn.Addr().String())
+	errc := make(chan error, 2)
+	go func() {
+		if err := statusSrv.Serve(statusLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errc <- fmt.Errorf("status listener: %w", err)
+		}
+	}()
 	go func() { errc <- d.Run(ctx) }()
 	select {
 	case err := <-reg.Errors():

@@ -285,17 +285,38 @@ func TestOutsideSlotNothingRunsExceptTrigger(t *testing.T) {
 
 func TestTriggerValidation(t *testing.T) {
 	h := newHarness(t)
-	if err := h.d.Trigger("base", "", schedule.Rebuild); err == nil {
-		t.Error("no repo loaded yet must fail")
+	if err := h.d.Trigger("base", "", schedule.Rebuild); !errors.Is(err, ErrNotReady) {
+		t.Errorf("no repo loaded yet: %v", err)
 	}
 	h.sync()
 	for _, c := range []struct {
 		container, flavor string
 		kind              schedule.Kind
-	}{{"nope", "", schedule.Rebuild}, {"base", "cuda", schedule.Rebuild}, {"base", "", schedule.None}} {
-		if err := h.d.Trigger(c.container, c.flavor, c.kind); err == nil {
-			t.Errorf("%+v should fail", c)
+		want              error
+	}{
+		{"nope", "", schedule.Rebuild, ErrNotFound},
+		{"base", "cuda", schedule.Rebuild, ErrNotFound},
+		{"base", "", schedule.None, ErrInvalid},
+	} {
+		if err := h.d.Trigger(c.container, c.flavor, c.kind); !errors.Is(err, c.want) {
+			t.Errorf("%+v: got %v, want %v", c, err, c.want)
 		}
+	}
+}
+
+func TestRequestGCOverridesSlotOnly(t *testing.T) {
+	h := newHarness(t)
+	h.push("narrow slot", map[string]string{"prebake.yaml": "slots: [\"02:00-04:00\"]\nkeep: 4\nregistry:\n  gc_slot_only: true\n"})
+	h.sync()
+	h.tick() // 12:00, outside the slot
+	h.d.RequestGC()
+	h.tick()
+	if h.reg.gcs != 1 {
+		t.Errorf("manual GC outside the slot: %d", h.reg.gcs)
+	}
+	h.tick()
+	if h.reg.gcs != 1 {
+		t.Errorf("a manual request is consumed: %d", h.reg.gcs)
 	}
 }
 

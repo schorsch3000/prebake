@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -202,7 +204,7 @@ func TestParseDaemonConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Branch != "main" || c.PollInterval != 5*time.Minute || c.DataDir != "/data" || c.ReadAddr != ":5000" ||
-		c.WriteAddr != ":5001" || c.RegistryHost != "localhost:5001" {
+		c.WriteAddr != ":5001" || c.StatusAddr != ":8080" || c.RegistryHost != "localhost:5001" {
 		t.Errorf("defaults: %+v", c)
 	}
 	// env overrides, flags override env
@@ -225,5 +227,105 @@ func TestParseDaemonConfig(t *testing.T) {
 		if _, err := parseDaemonConfig(nil, env(e), &sink); err == nil {
 			t.Errorf("%s must fail", name)
 		}
+	}
+}
+
+// statusServer serves canned /status JSON and records POSTs.
+func statusServer(t *testing.T, dto string) (*httptest.Server, *[]string) {
+	var posts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/status":
+			w.Write([]byte(dto))
+		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/trigger/base/nope"):
+			w.WriteHeader(404)
+			w.Write([]byte(`{"error":"not found: no flavor"}`))
+		case r.Method == "POST":
+			posts = append(posts, r.URL.RequestURI())
+			w.WriteHeader(202)
+			w.Write([]byte(`{"queued":"ok"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &posts
+}
+
+const statusJSON = `{"generated_at":"2026-10-22T02:00:00Z","repo":{"state":"degraded","head":"bbbbbbbbbb","active":"aaaaaaaaaa","error":"containers/x: stray file"},
+"jobs":[
+ {"container":"late","flavor":"default","state":"idle","last_rebuild":"2026-10-20T02:00:00Z","next_kind":"refresh","next_run":"2026-10-23T02:00:00Z"},
+ {"container":"parked","flavor":"cuda","state":"parked","error":"apt exploded\nsecond line"},
+ {"container":"soon","flavor":"default","state":"queued","next_kind":"rebuild","next_run":"2026-10-22T02:00:00Z"}
+]}`
+
+func TestStatusCommand(t *testing.T) {
+	srv, _ := statusServer(t, statusJSON)
+	code, out, errOut := runCLI(t, "status", "--url", srv.URL)
+	if code != 0 {
+		t.Fatalf("%d %s", code, errOut)
+	}
+	for _, want := range []string{"repo: degraded  active=aaaaaaa head=bbbbbbb", "containers/x: stray file", "CONTAINER", "parked", "apt exploded", "never"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "second line") {
+		t.Errorf("only the first error line belongs in the table:\n%s", out)
+	}
+	code, out, _ = runCLI(t, "status", "--json", "--url", srv.URL)
+	var dto struct{ Jobs []map[string]any }
+	if code != 0 || json.Unmarshal([]byte(out), &dto) != nil || len(dto.Jobs) != 3 {
+		t.Errorf("json: %d %s", code, out)
+	}
+	// PREBAKE_URL is the default
+	t.Setenv("PREBAKE_URL", srv.URL)
+	if code, _, _ := runCLI(t, "status"); code != 0 {
+		t.Errorf("PREBAKE_URL not honoured: %d", code)
+	}
+	if code, _, e := runCLI(t, "status", "--url", "http://127.0.0.1:1"); code != 2 || e == "" {
+		t.Errorf("unreachable daemon must be exit 2: %d %q", code, e)
+	}
+}
+
+func TestDryRunOrdersByNextRun(t *testing.T) {
+	srv, _ := statusServer(t, statusJSON)
+	code, out, _ := runCLI(t, "dry-run", "--url", srv.URL)
+	if code != 0 {
+		t.Fatal(code)
+	}
+	soon, late, parked := strings.Index(out, "soon"), strings.Index(out, "late"), strings.Index(out, "parked")
+	if !(soon >= 0 && soon < late && late < parked) {
+		t.Errorf("order wrong (soon %d, late %d, parked %d):\n%s", soon, late, parked, out)
+	}
+	if !strings.Contains(out, "now") || !strings.Contains(out, "24h0m0s") || !strings.Contains(out, "(parked)") {
+		t.Errorf("relative times:\n%s", out)
+	}
+}
+
+func TestTriggerAndGCCommands(t *testing.T) {
+	srv, posts := statusServer(t, statusJSON)
+	if code, out, e := runCLI(t, "trigger", "base", "--url", srv.URL); code != 0 || !strings.Contains(out, "queued") {
+		t.Fatalf("%d %q %q", code, out, e)
+	}
+	// flags after the positional argument work, flavor syntax container:flavor
+	if code, _, e := runCLI(t, "trigger", "child:cuda", "--kind", "refresh", "--url", srv.URL); code != 0 {
+		t.Fatalf("%d %q", code, e)
+	}
+	if code, _, e := runCLI(t, "gc", "--url", srv.URL); code != 0 {
+		t.Fatalf("%d %q", code, e)
+	}
+	want := []string{"/trigger/base?kind=rebuild", "/trigger/child/cuda?kind=refresh", "/gc"}
+	if strings.Join(*posts, " ") != strings.Join(want, " ") {
+		t.Errorf("posts = %v", *posts)
+	}
+	if code, _, e := runCLI(t, "trigger", "base:nope", "--url", srv.URL); code != 1 || !strings.Contains(e, "404") {
+		t.Errorf("rejected trigger must be exit 1: %d %q", code, e)
+	}
+	if code, _, _ := runCLI(t, "trigger", "--url", srv.URL); code != 2 {
+		t.Errorf("missing argument: %d", code)
+	}
+	if code, _, _ := runCLI(t, "trigger", "a", "b", "--url", srv.URL); code != 2 {
+		t.Errorf("two arguments: %d", code)
 	}
 }

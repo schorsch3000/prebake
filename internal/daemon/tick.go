@@ -93,17 +93,33 @@ func (d *Daemon) Tick(ctx context.Context) {
 	d.maybeGC(ctx, repo)
 }
 
+// Errors returned by Trigger, for mapping to API status codes.
+var (
+	ErrNotReady = errors.New("no config repo loaded yet")
+	ErrNotFound = errors.New("not found")
+	ErrInvalid  = errors.New("invalid request")
+)
+
+// RequestGC asks for a garbage collection at the next scheduler pass, even
+// outside a slot (a manual request overrides gc_slot_only).
+func (d *Daemon) RequestGC() {
+	d.mu.Lock()
+	d.gcPending, d.gcForce = true, true
+	d.mu.Unlock()
+	d.Wake()
+}
+
 // Trigger queues a job right now, bypassing slots, and unparks it.
 func (d *Daemon) Trigger(container, flavor string, kind schedule.Kind) error {
 	d.mu.Lock()
 	repo := d.repo
 	d.mu.Unlock()
 	if repo == nil {
-		return errors.New("no config repo loaded yet")
+		return ErrNotReady
 	}
 	c, ok := repo.Containers[container]
 	if !ok {
-		return fmt.Errorf("unknown container %q", container)
+		return fmt.Errorf("%w: unknown container %q", ErrNotFound, container)
 	}
 	if flavor == "" {
 		flavor = config.DefaultFlavor
@@ -113,10 +129,10 @@ func (d *Daemon) Trigger(container, flavor string, kind schedule.Kind) error {
 		known = known || f == flavor
 	}
 	if !known {
-		return fmt.Errorf("container %q has no flavor %q", container, flavor)
+		return fmt.Errorf("%w: container %q has no flavor %q", ErrNotFound, container, flavor)
 	}
 	if kind != schedule.Rebuild && kind != schedule.Refresh {
-		return errors.New("kind must be rebuild or refresh")
+		return fmt.Errorf("%w: kind must be rebuild or refresh", ErrInvalid)
 	}
 	k := schedule.Key{Container: container, Flavor: flavor}
 	d.queue.Trigger(k, kind)
@@ -232,12 +248,13 @@ func (d *Daemon) prune(ctx context.Context, repo *config.Repo, container string)
 // only place that builds and pushes.
 func (d *Daemon) maybeGC(ctx context.Context, repo *config.Repo) {
 	d.mu.Lock()
-	pending := d.gcPending
+	pending, force := d.gcPending, d.gcForce
 	d.mu.Unlock()
 	if !pending || len(d.queue.Pending()) > 0 {
 		return
 	}
-	if _, inSlot := schedule.CurrentWindow(repo.Global.Slots, d.now()); !inSlot && repo.Global.Registry.GCSlotOnly != nil && *repo.Global.Registry.GCSlotOnly {
+	if _, inSlot := schedule.CurrentWindow(repo.Global.Slots, d.now()); !inSlot && !force &&
+		repo.Global.Registry.GCSlotOnly != nil && *repo.Global.Registry.GCSlotOnly {
 		return
 	}
 	if err := d.registry.GC(ctx); err != nil {
@@ -246,7 +263,7 @@ func (d *Daemon) maybeGC(ctx context.Context, repo *config.Repo) {
 		return
 	}
 	d.mu.Lock()
-	d.gcPending = false
+	d.gcPending, d.gcForce = false, false
 	d.mu.Unlock()
 	d.log.Info("registry GC done")
 }
