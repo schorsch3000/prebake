@@ -30,7 +30,7 @@ You need Docker with Compose on the host, and a git repo with the layout below
 
 ```sh
 git clone https://github.com/schorsch3000/prebake && cd prebake
-export REPO_URL=git@github.com:you/your-prebake-config.git
+cp example.env .env             # every setting with its default; set at least REPO_URL
 docker compose up -d --build
 docker compose logs prebake | grep ssh-ed25519     # the deploy key, or: docker compose exec prebake prebake show-key
 ```

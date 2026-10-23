@@ -5,6 +5,7 @@ package composefiles
 import (
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -99,6 +100,41 @@ func TestProxyFileSecurityBasics(t *testing.T) {
 	for _, k := range []string{"SP_ALLOW_HEAD", "SP_ALLOW_GET", "SP_ALLOW_POST", "SP_ALLOW_DELETE"} {
 		if s, _ := env[k].(string); strings.Contains(s, "containers") || s == ".*" || s == "(.*)" {
 			t.Errorf("%s allows the container API or everything: %s", k, s)
+		}
+	}
+}
+
+// example.env must list every variable the compose files read, and nothing the
+// compose files do not read (apart from COMPOSE_FILE, which Compose itself reads).
+func TestExampleEnvMatchesComposeFiles(t *testing.T) {
+	used := map[string]bool{}
+	ref := regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)`)
+	for _, f := range []string{"../../docker-compose.yaml", "../../docker-compose.proxy.yaml"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range ref.FindAllStringSubmatch(string(b), -1) {
+			used[m[1]] = true
+		}
+	}
+	env, err := os.ReadFile("../../example.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]bool{}
+	line := regexp.MustCompile(`(?m)^#? ?([A-Z][A-Z0-9_]*)=`)
+	for _, m := range line.FindAllStringSubmatch(string(env), -1) {
+		listed[m[1]] = true
+	}
+	for v := range used {
+		if !listed[v] {
+			t.Errorf("example.env does not mention %s, which the compose files use", v)
+		}
+	}
+	for v := range listed {
+		if !used[v] && v != "COMPOSE_FILE" {
+			t.Errorf("example.env lists %s, which no compose file reads", v)
 		}
 	}
 }
