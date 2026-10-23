@@ -1,4 +1,4 @@
-module prebake
+module github.com/schorsch3000/prebake
 
 go 1.27.2
 

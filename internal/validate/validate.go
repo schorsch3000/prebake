@@ -13,7 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"prebake/internal/config"
+	"github.com/schorsch3000/prebake/internal/config"
 )
 
 type Severity int

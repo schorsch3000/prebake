@@ -9,7 +9,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"prebake/internal/schedule"
+	"github.com/schorsch3000/prebake/internal/schedule"
 )
 
 const (

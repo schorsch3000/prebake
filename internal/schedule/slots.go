@@ -7,7 +7,7 @@ import (
 	"hash/fnv"
 	"time"
 
-	"prebake/internal/config"
+	"github.com/schorsch3000/prebake/internal/config"
 )
 
 // Window is one concrete occurrence of a slot on the calendar.

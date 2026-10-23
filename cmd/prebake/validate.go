@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"prebake/internal/validate"
+	"github.com/schorsch3000/prebake/internal/validate"
 )
 
 const validateUsage = `usage: prebake validate [--repo PATH] [--staged | --rev REV | --worktree] [--format text|json] [--strict]

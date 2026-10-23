@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"prebake/internal/schedule"
+	"github.com/schorsch3000/prebake/internal/schedule"
 )
 
 func open(t *testing.T) *Store {

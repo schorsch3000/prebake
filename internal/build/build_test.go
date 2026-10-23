@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"prebake/internal/config"
-	"prebake/internal/schedule"
+	"github.com/schorsch3000/prebake/internal/config"
+	"github.com/schorsch3000/prebake/internal/schedule"
 )
 
 // fake records calls and fails on demand.

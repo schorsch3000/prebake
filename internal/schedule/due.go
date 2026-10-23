@@ -3,7 +3,7 @@ package schedule
 import (
 	"time"
 
-	"prebake/internal/config"
+	"github.com/schorsch3000/prebake/internal/config"
 )
 
 type Kind int

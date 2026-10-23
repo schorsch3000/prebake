@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"prebake/internal/config"
-	"prebake/internal/schedule"
+	"github.com/schorsch3000/prebake/internal/config"
+	"github.com/schorsch3000/prebake/internal/schedule"
 )
 
 // Job is one unit of work for the runner.

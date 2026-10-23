@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"prebake/internal/config"
+	"github.com/schorsch3000/prebake/internal/config"
 )
 
 func slot(t *testing.T, s string) config.Slot {
