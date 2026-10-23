@@ -9,12 +9,13 @@ work=$(mktemp -d)
 gitconfig=$work/gitconfig
 printf '[safe]\n\tdirectory = *\n' > "$gitconfig"
 export CI_ORIGIN=$origin CI_GITCONFIG=$gitconfig REPO_URL=/origin.git
-# PREBAKE_PROXY=1 runs the daemon behind the filtering docker socket proxy.
-# Order matters: the proxy file overrides the base volumes, the CI file adds to them.
-compose=(docker compose -f docker-compose.yaml)
+# PREBAKE_PROXY=1 runs the daemon behind the filtering docker socket proxy: that is a
+# standalone compose file, used instead of docker-compose.yaml. The CI file is merged on top.
 if [ "${PREBAKE_PROXY:-}" = 1 ]; then
-  compose+=(-f docker-compose.proxy.yaml)
+  compose=(docker compose -f docker-compose.proxy.yaml)
   export PROXY_LOGLEVEL=debug   # log allowed requests too, to see what the daemon asks for
+else
+  compose=(docker compose -f docker-compose.yaml)
 fi
 compose+=(-f docker-compose.ci.yaml)
 status=http://localhost:8080/status

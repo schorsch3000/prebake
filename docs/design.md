@@ -307,7 +307,7 @@ parked/retry state. Logs go to stdout; build logs are kept per job (bounded).
   `8080:8080` (status).
 - env: `REPO_URL` (required), optional Pushover and TLS.
 - Docker socket access is root-equivalent on the host. `docker-compose.proxy.yaml`
-  replaces the socket mount with wollomatic/socket-proxy (1.13.1, pinned by
+  (a standalone alternative to `docker-compose.yaml`, kept in sync by a test) has no socket mount and uses wollomatic/socket-proxy (1.13.1, pinned by
   digest) on an internal network, with a per-method regexp allowlist for build,
   grpc/session (buildx), and image inspect/pull/tag/push/remove. The proxy filters
   by method and path, not by body, so it only restricts anything if containers

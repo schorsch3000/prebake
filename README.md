@@ -176,7 +176,8 @@ Flags override variables; see `prebake daemon --help`.
 - To avoid that, use the socket proxy variant:
 
   ```sh
-  docker compose -f docker-compose.yaml -f docker-compose.proxy.yaml up -d --build
+  docker compose -f docker-compose.proxy.yaml up -d --build
+  docker compose -f docker-compose.proxy.yaml down
   ```
 
   The daemon then has no socket; it talks to
@@ -188,7 +189,11 @@ Flags override variables; see `prebake daemon --help`.
   body, so allowing container creation would allow privileged containers. The
   popular HAProxy-based Tecnativa proxy does not work: it drops the `h2c` upgrade
   that buildx uses, see the comments in `docker-compose.proxy.yaml`. Needs
-  Docker Compose 2.24 or newer. CI runs the end-to-end test in both modes.
+  Docker Compose 2.20 or newer. CI runs the end-to-end test in both modes.
+  The two compose files are standalone; use one or the other, and put
+  `COMPOSE_FILE=docker-compose.proxy.yaml` into `.env` if you want plain
+  `docker compose up` and `down` to use it. When you switch from one to the
+  other, run `down` with the old file first (the data volume is kept).
   Note that the build itself still runs the Dockerfiles of your config repo, so
   only point prebake at repos you trust.
 - The status/control API and the read-only registry have **no authentication**;

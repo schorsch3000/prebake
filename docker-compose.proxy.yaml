@@ -1,22 +1,62 @@
-# Optional: let the daemon reach Docker only through a filtering socket proxy
-# instead of mounting /var/run/docker.sock into it.
+# prebake behind a filtering Docker socket proxy: the daemon container has no Docker
+# socket. Standalone file, use it instead of docker-compose.yaml:
 #
-#   docker compose -f docker-compose.yaml -f docker-compose.proxy.yaml up -d --build
+#   docker compose -f docker-compose.proxy.yaml up -d --build
+#   docker compose -f docker-compose.proxy.yaml down
+#
+# (Set COMPOSE_FILE=docker-compose.proxy.yaml in .env to drop the -f.)
+# Set REPO_URL, then see README.md. The prebake service is the same as in
+# docker-compose.yaml except for the lines marked "proxy mode"; a test keeps the two
+# files in sync.
 #
 # The proxy (wollomatic/socket-proxy, a small Go program) allows requests by HTTP
 # method and URL path only, never by request body. That is why prebake runs smoke
 # tests as build steps instead of `docker run`: if container creation were allowed,
 # anybody could start a privileged container and the proxy would protect nothing.
-# As configured here the daemon can build, pull, tag, push and remove images, and
+# As configured below the daemon can build, pull, tag, push and remove images, and
 # nothing else.
 #
 # Why not Tecnativa/docker-socket-proxy (HAProxy)? buildx talks to the Docker engine
 # through `POST /grpc` with `Upgrade: h2c`; HAProxy does not pass that upgrade on, the
 # engine answers 500, and buildx then falls back to a docker-container builder, which
 # needs container access. A Go reverse proxy passes the upgrade through.
-#
-# Needs Docker Compose >= 2.24 (`!override`).
 services:
+  prebake:
+    build: .
+    image: prebake:local
+    restart: unless-stopped
+    environment:
+      REPO_URL: ${REPO_URL:?set REPO_URL to the config repo, e.g. git@github.com:me/prebake-config.git}
+      REPO_BRANCH: ${REPO_BRANCH:-main}
+      POLL_INTERVAL: ${POLL_INTERVAL:-5m}
+      JITTER: ${JITTER:-15m}   # builds start at a random offset within this after a slot opens
+      TZ: ${TZ:-UTC}           # build slots are interpreted in this time zone
+      PUSHOVER_TOKEN: ${PUSHOVER_TOKEN:-}
+      PUSHOVER_USER: ${PUSHOVER_USER:-}
+      # TLS for the read-only registry listener: mount the files below and set both.
+      TLS_CERT: ${TLS_CERT:-}
+      TLS_KEY: ${TLS_KEY:-}
+      DOCKER_HOST: tcp://docker-proxy:2375   # proxy mode
+    ports:
+      - "5000:5000"            # registry, read-only, for everybody
+      - "127.0.0.1:5001:5001"  # registry, write: loopback ONLY, the host dockerd pushes here
+      - "8080:8080"            # status page and control API (no authentication)
+    volumes:
+      - prebake-data:/data     # proxy mode: no Docker socket here
+      # - ./certs:/certs:ro
+    networks:                  # proxy mode
+      - default
+      - docker-api
+    depends_on:                # proxy mode
+      docker-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "prebake", "status", "--url", "http://127.0.0.1:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   docker-proxy:
     # pinned to 1.13.1 by digest; update deliberately
     image: wollomatic/socket-proxy:1.13.1@sha256:3935b709275e4ec35d6ed5a5c4a1f0d01ed31eec5e7234efc3357ecd47689002
@@ -51,19 +91,9 @@ services:
       timeout: 5s
       retries: 30
 
-  prebake:
-    environment:
-      DOCKER_HOST: tcp://docker-proxy:2375
-    # drop the socket mount of the base file; keep only the data volume
-    volumes: !override
-      - prebake-data:/data
-    networks:
-      - default
-      - docker-api
-    depends_on:
-      docker-proxy:
-        condition: service_healthy
-
 networks:
   docker-api:
     internal: true     # only prebake and the proxy are on it; the proxy port is not published
+
+volumes:
+  prebake-data:
