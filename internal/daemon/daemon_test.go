@@ -1118,3 +1118,98 @@ func TestSyncNowRacesWithThePollLoopSafely(t *testing.T) {
 		t.Errorf("%+v", got)
 	}
 }
+
+// --- why is work pending ----------------------------------------------------------------
+
+func needsOf(s Status, key string) (needs string, j JobStatus) {
+	for _, j := range s.Jobs {
+		if j.Key.String() == key {
+			return j.Needs, j
+		}
+	}
+	return "", JobStatus{}
+}
+
+func TestStatusExplainsWhyWorkIsPending(t *testing.T) {
+	h := narrowSlotHarness(t) // 12:00, outside the 02:00-04:00 slot
+	h.sync()
+	if got, _ := needsOf(h.d.Status(), "base:default"); got != "" {
+		t.Errorf("before the first scheduler pass nothing is known: %q", got)
+	}
+	// builds that keep failing keep the work pending, which is what makes the reason visible
+	h.b.fail["base"], h.b.fail["solo"] = 5, 5
+	h.tick()
+	got, base := needsOf(h.d.Status(), "base:default")
+	if got != "never built" || base.State != "retrying" || base.NextKind != schedule.Rebuild || !base.NextRun.Equal(h.clk.now()) {
+		t.Errorf("absent: needs %q, %+v (an urgent job runs 'now', not at the next slot)", got, base)
+	}
+	if got, j := needsOf(h.d.Status(), "child:default"); got != "never built" || j.State != "queued" {
+		t.Errorf("a child waits behind its parent but is needed as well: %q %q", got, j.State)
+	}
+
+	// built: nothing pending
+	h.b.fail["base"], h.b.fail["solo"] = 0, 0
+	h.clk.advance(16 * time.Minute)
+	h.tick()
+	for _, j := range h.d.Status().Jobs {
+		if j.Needs != "" {
+			t.Errorf("%s: nothing is needed after the builds: %q", j.Key, j.Needs)
+		}
+	}
+	h.b.take()
+
+	// stale against git
+	h.b.fail["base"] = 5
+	h.push("change base", map[string]string{"containers/base/Dockerfile": "FROM debian\nRUN echo new\n"})
+	h.sync()
+	h.tick()
+	if got, _ := needsOf(h.d.Status(), "base:default"); got != "build inputs changed in git" {
+		t.Errorf("stale: %q", got)
+	}
+
+	// missing from the registry
+	h.b.fail["base"] = 0
+	h.clk.advance(16 * time.Minute)
+	h.tick() // the rebuild succeeds
+	h.b.take()
+	h.reg.mu.Lock()
+	h.reg.tags["solo"] = nil
+	h.reg.mu.Unlock()
+	h.b.fail["solo"] = 5
+	h.tick()
+	if got, _ := needsOf(h.d.Status(), "solo:default"); got != "missing from the registry" {
+		t.Errorf("registry: %q", got)
+	}
+	h.b.fail["solo"] = 0
+	h.clk.advance(16 * time.Minute)
+	h.tick()
+	h.b.take()
+
+	// an interval that ran out
+	h.clk.advance(2 * 24 * time.Hour)
+	h.b.fail["base"] = 5
+	h.tick()
+	got, base = needsOf(h.d.Status(), "base:default")
+	if !strings.HasSuffix(got, " interval over") || !base.NextRun.Equal(h.clk.now()) {
+		t.Errorf("overdue: %q %+v", got, base)
+	}
+}
+
+func TestStatusExplainsAnEarlyStartInTheSlot(t *testing.T) {
+	h := narrowSlotHarness(t)
+	h.seedBuilt("base", schedule.Rebuild, 10*time.Hour) // refresh due in 14h = 02:00 tomorrow
+	h.seedBuilt("child", schedule.Rebuild, 10*time.Hour)
+	h.seedBuilt("solo", schedule.Rebuild, 10*time.Hour)
+	h.sync()
+	h.b.fail["base"] = 5
+	h.clk.advance(13*time.Hour + 30*time.Minute) // 01:30 next day: outside the slot, nothing due yet
+	h.tick()
+	if got, _ := needsOf(h.d.Status(), "base:default"); got != "" {
+		t.Errorf("not due, outside the slot: %q", got)
+	}
+	h.clk.advance(30 * time.Minute) // 02:00: in the slot, due at 02:00 exactly
+	h.tick()
+	if got, _ := needsOf(h.d.Status(), "base:default"); got == "" {
+		t.Errorf("in the slot the pending refresh must be explained")
+	}
+}

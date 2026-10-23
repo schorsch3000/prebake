@@ -269,6 +269,12 @@ switch it off, `--color always|never|auto` overrides.
 `prebake status` shows the version of the daemon it talks to (`daemon: prebake 0.2.1 (4b273f3)`, also in `/status` and the web page footer), and
 warns when the CLI and the daemon differ in major or minor version (patch releases never warn; `edge` or development builds cannot be compared).
 
+`status` has a NEEDS column and `dry-run` a WHY column that say why work is pending, in the terms of the
+schedule rules: `never built`, `missing from the registry`, `build inputs changed in git`, `refresh interval over` /
+`rebuild interval over` (a missed slot or downtime), or `early start: the last slot before it falls due`. Work that is
+needed now shows `now` in `dry-run`, whatever the slot says; `on schedule` means nothing is pending and the next run is
+just the planned one. The reasons are refreshed by the scheduler pass (every 30 seconds and after each build), not on every request.
+
 `prebake status --watch` (or `-w`, with `-n 1s` for the interval, default 2s) is a live
 view that redraws in place until Ctrl-C, shows how long a running build has been going, and
 keeps going when the daemon restarts. It needs a terminal; in scripts, loop around plain

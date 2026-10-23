@@ -150,7 +150,7 @@ func renderStatus(dto *api.StatusDTO, p palette) string {
 	if dto.Repo.Error != "" {
 		fmt.Fprintf(&b, "      %s\n", p.paint(ansiRed, strings.ReplaceAll(strings.TrimSpace(dto.Repo.Error), "\n", "\n      ")))
 	}
-	rows := [][]cell{{{"CONTAINER", ansiBold}, {"FLAVOR", ansiBold}, {"STATE", ansiBold}, {"LAST REBUILD", ansiBold}, {"LAST REFRESH", ansiBold}, {"ERROR", ansiBold}}}
+	rows := [][]cell{{{"CONTAINER", ansiBold}, {"FLAVOR", ansiBold}, {"STATE", ansiBold}, {"LAST REBUILD", ansiBold}, {"LAST REFRESH", ansiBold}, {"NEEDS", ansiBold}, {"ERROR", ansiBold}}}
 	for _, j := range dto.Jobs {
 		state := j.State
 		if j.RunningSince != nil && !dto.GeneratedAt.IsZero() {
@@ -162,8 +162,12 @@ func renderStatus(dto *api.StatusDTO, p palette) string {
 			}
 			return cell{fmtTime(t), ""}
 		}
+		needs := cell{"-", ansiDim}
+		if j.Needs != "" {
+			needs = cell{j.Needs, ansiYellow}
+		}
 		rows = append(rows, []cell{{j.Container, ""}, {j.Flavor, ""}, {state, stateCode(j.State)},
-			when(j.LastRebuild), when(j.LastRefresh), {errorSummary(j.Error), ansiDim}})
+			when(j.LastRebuild), when(j.LastRefresh), needs, {errorSummary(j.Error), ansiDim}})
 	}
 	b.WriteString(p.table(rows))
 	return b.String()
@@ -309,17 +313,21 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 		return a.Before(*b)
 	})
 	now := dto.GeneratedAt
-	rows := [][]cell{{{"CONTAINER", ansiBold}, {"FLAVOR", ansiBold}, {"NEXT", ansiBold}, {"AT", ansiBold}, {"IN", ansiBold}}}
+	rows := [][]cell{{{"CONTAINER", ansiBold}, {"FLAVOR", ansiBold}, {"NEXT", ansiBold}, {"AT", ansiBold}, {"IN", ansiBold}, {"WHY", ansiBold}}}
 	for _, j := range jobs {
 		if j.NextRun == nil || j.NextKind == "" {
-			rows = append(rows, []cell{{j.Container, ""}, {j.Flavor, ""}, {"-", ""}, {"-", ""}, {"(" + j.State + ")", stateCode(j.State)}})
+			rows = append(rows, []cell{{j.Container, ""}, {j.Flavor, ""}, {"-", ""}, {"-", ""}, {"(" + j.State + ")", stateCode(j.State)}, {j.Needs, ansiYellow}})
 			continue
 		}
 		in := cell{"now", ansiYellow}
 		if d := j.NextRun.Sub(now).Round(time.Minute); d > 0 {
 			in = cell{d.String(), ""}
 		}
-		rows = append(rows, []cell{{j.Container, ""}, {j.Flavor, ""}, {j.NextKind, ""}, {fmtTime(j.NextRun), ""}, in})
+		why := cell{j.Needs, ansiYellow}
+		if j.Needs == "" {
+			why = cell{"on schedule", ansiDim}
+		}
+		rows = append(rows, []cell{{j.Container, ""}, {j.Flavor, ""}, {j.NextKind, ""}, {fmtTime(j.NextRun), ""}, in, why})
 	}
 	fmt.Fprint(stdout, p.table(rows))
 	return 0

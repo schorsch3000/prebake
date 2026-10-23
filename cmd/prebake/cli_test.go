@@ -487,13 +487,15 @@ func TestStatusDemoFileRendersEveryState(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("%d %s", code, e)
 	}
-	for _, want := range []string{"repo: degraded", "idle", "building 3m12s", "queued", "retrying", "parked", "skipped", "never", "CET +01:00"} {
+	for _, want := range []string{"repo: degraded", "idle", "building 3m12s", "queued", "retrying", "parked", "skipped", "never", "CET +01:00",
+		"NEEDS", "build inputs changed in git", "rebuild interval over"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status lacks %q:\n%s", want, out)
 		}
 	}
 	code, out, _ = runCLI(t, "dry-run", "--color", "never", "--url", srv.URL)
-	if code != 0 || !strings.Contains(out, "now") || !strings.Contains(out, "15m0s") || !strings.Contains(out, "(parked)") {
+	if code != 0 || !strings.Contains(out, "now") || !strings.Contains(out, "15m0s") || !strings.Contains(out, "(parked)") ||
+		!strings.Contains(out, "WHY") || !strings.Contains(out, "never built") || !strings.Contains(out, "on schedule") {
 		t.Errorf("dry-run: %d\n%s", code, out)
 	}
 	if _, colored, _ := runCLI(t, "status", "--color", "always", "--url", srv.URL); !strings.Contains(colored, ansiRed+"parked") || !strings.Contains(colored, ansiYellow+"building") {
@@ -558,5 +560,25 @@ func TestStatusShowsTheDaemonVersionAndWarnsOnSkew(t *testing.T) {
 	clientVersion = func() string { return "0.1.0" }
 	if _, colored, _ := runCLI(t, "status", "--color", "always", "--url", srv.URL); !strings.Contains(colored, ansiYellow+"warning:") {
 		t.Error("colored warning")
+	}
+}
+
+func TestNeedsColumnInStatusAndWhyInDryRun(t *testing.T) {
+	dto := `{"generated_at":"2026-10-22T02:00:00Z","repo":{"state":"ok"},"jobs":[
+	 {"container":"a","flavor":"default","state":"queued","needs":"never built","next_kind":"rebuild","next_run":"2026-10-22T02:00:00Z"},
+	 {"container":"b","flavor":"default","state":"idle","next_kind":"refresh","next_run":"2026-10-23T02:00:00Z"}]}`
+	srv, _ := statusServer(t, dto)
+	_, out, _ := runCLI(t, "status", "--color", "never", "--url", srv.URL)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if !strings.Contains(lines[len(lines)-3], "NEEDS") || !strings.Contains(lines[len(lines)-2], "never built") || !strings.Contains(lines[len(lines)-1], " -") {
+		t.Errorf("status:\n%s", out)
+	}
+	_, out, _ = runCLI(t, "dry-run", "--color", "never", "--url", srv.URL)
+	if !strings.Contains(out, "now") || !strings.Contains(out, "never built") || !strings.Contains(out, "on schedule") {
+		t.Errorf("dry-run:\n%s", out)
+	}
+	_, colored, _ := runCLI(t, "status", "--color", "always", "--url", srv.URL)
+	if !strings.Contains(colored, ansiYellow+"never built") {
+		t.Error("needs is yellow")
 	}
 }

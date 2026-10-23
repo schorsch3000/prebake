@@ -86,7 +86,7 @@ func fixture() *fakeBackend {
 			{Key: schedule.Key{Container: "base", Flavor: "default"}, State: "idle",
 				Image:    state.Image{State: schedule.State{LastRebuild: t0, LastRefresh: t0.Add(time.Hour)}, DateTag: "default-20261022-020000", Digest: "sha256:abcdef0123456789abcdef"},
 				NextKind: schedule.Refresh, NextRun: t0.Add(24 * time.Hour)},
-			{Key: schedule.Key{Container: "child", Flavor: "cuda"}, State: "parked", Error: "apt <exploded>"},
+			{Key: schedule.Key{Container: "child", Flavor: "cuda"}, State: "parked", Error: "apt <exploded>", Needs: "never built"},
 		},
 	}}
 }
@@ -147,6 +147,9 @@ func TestStatusJSON(t *testing.T) {
 		j.LastRebuild == nil || j.DateTag != "default-20261022-020000" {
 		t.Errorf("%+v", j)
 	}
+	if dto.Jobs[0].Needs != "" || dto.Jobs[1].Needs != "never built" {
+		t.Errorf("needs: %q %q", dto.Jobs[0].Needs, dto.Jobs[1].Needs)
+	}
 	p := dto.Jobs[1]
 	if p.State != "parked" || p.Error != "apt <exploded>" || p.LastRebuild != nil || p.NextKind != "" {
 		t.Errorf("never-built job must have null times and no next: %+v", p)
@@ -162,7 +165,7 @@ func TestPageEscapesAndShowsState(t *testing.T) {
 	if code != 200 || !strings.HasPrefix(h.Get("Content-Type"), "text/html") {
 		t.Fatalf("%d %v", code, h)
 	}
-	for _, want := range []string{"prebake 0.2.1 (abcdef123456)", "slots in UTC", "degraded", "aaaaaaaaaaaa", "base", "child", "cuda", "parked", "default-20261022-020000", "sha256:abcde"} {
+	for _, want := range []string{"never built", "prebake 0.2.1 (abcdef123456)", "slots in UTC", "degraded", "aaaaaaaaaaaa", "base", "child", "cuda", "parked", "default-20261022-020000", "sha256:abcde"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)
 		}

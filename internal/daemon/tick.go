@@ -113,7 +113,11 @@ func (d *Daemon) candidates(ctx context.Context, repo *config.Repo, now time.Tim
 		eff := repo.Containers[k.Container].Effective(repo.Global)
 		dec := schedule.Decide(repo.Global.Slots, policyOf(eff), img.State, now, schedule.Jitter(k.String(), d.opts.Jitter))
 		if dec.Run {
-			out = append(out, candidate{k, dec.Kind, prioSchedule, dec.Due, dec.Reason == "due", dec.Reason})
+			why := "early start: the last slot before it falls due"
+			if dec.Reason == "due" {
+				why = dec.Kind.String() + " interval over"
+			}
+			out = append(out, candidate{k, dec.Kind, prioSchedule, dec.Due, dec.Reason == "due", why})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -123,6 +127,17 @@ func (d *Daemon) candidates(ctx context.Context, repo *config.Repo, now time.Tim
 		return out[i].due.Before(out[j].due)
 	})
 	return out
+}
+
+// setNeeds remembers why work is pending, for Status (the registry is not asked on every status request).
+func (d *Daemon) setNeeds(cands []candidate) {
+	m := make(map[schedule.Key]candidate, len(cands))
+	for _, c := range cands {
+		m[c.key] = c
+	}
+	d.mu.Lock()
+	d.needs = m
+	d.mu.Unlock()
 }
 
 // Tick evaluates what is needed once and runs everything that is runnable now, one build at
@@ -136,7 +151,9 @@ func (d *Daemon) Tick(ctx context.Context) {
 	}
 	d.queue.SetRetryDelay(repo.Global.RetryDelay.Std())
 	urgent := map[schedule.Key]bool{}
-	for _, c := range d.candidates(ctx, repo, d.now()) {
+	cands := d.candidates(ctx, repo, d.now())
+	d.setNeeds(cands)
+	for _, c := range cands {
 		if c.urgent {
 			urgent[c.key] = true
 		}
@@ -154,6 +171,7 @@ func (d *Daemon) Tick(ctx context.Context) {
 		}
 		d.runJob(ctx, repo, job)
 	}
+	d.setNeeds(d.candidates(ctx, repo, d.now())) // what is still needed after this pass
 	d.maybeGC(ctx, repo)
 }
 
@@ -416,6 +434,10 @@ type JobStatus struct {
 	RunningSince time.Time
 	NextKind     schedule.Kind
 	NextRun      time.Time
+	// Needs is why work is pending for this job: "never built", "missing from the registry",
+	// "build inputs changed in git", "<kind> interval over", or an early start inside the slot.
+	// Empty when nothing is needed. Updated by the scheduler pass, not on every request.
+	Needs string
 }
 
 // Status is a snapshot for the status page and `prebake status`.
@@ -436,6 +458,10 @@ func (d *Daemon) Status() Status {
 	for k, v := range d.running {
 		running[k] = v
 	}
+	needs := make(map[schedule.Key]candidate, len(d.needs))
+	for k, v := range d.needs {
+		needs[k] = v
+	}
 	d.mu.Unlock()
 	if repo == nil {
 		return st
@@ -446,7 +472,12 @@ func (d *Daemon) Status() Status {
 		s, msg := d.queue.StatusOf(k)
 		eff := repo.Containers[k.Container].Effective(repo.Global)
 		kind, at := schedule.NextRun(repo.Global.Slots, policyOf(eff), img.State, now)
-		st.Jobs = append(st.Jobs, JobStatus{Key: k, State: s.String(), Error: msg, LastRun: last[k], Image: img, RunningSince: running[k], NextKind: kind, NextRun: at})
+		need := needs[k]
+		if need.urgent {
+			// absent, stale against git or overdue: it runs as soon as the queue gets to it, whatever the schedule says
+			kind, at = need.kind, now
+		}
+		st.Jobs = append(st.Jobs, JobStatus{Key: k, State: s.String(), Error: msg, LastRun: last[k], Image: img, RunningSince: running[k], NextKind: kind, NextRun: at, Needs: need.why})
 	}
 	sort.Slice(st.Jobs, func(i, j int) bool { return st.Jobs[i].Key.String() < st.Jobs[j].Key.String() })
 	return st

@@ -305,6 +305,8 @@ Status listener (default `:8080`, read-only except trigger, no auth):
 - `POST /sync[?commit=<sha>][&branch=<name>]`: fetch, validate and activate now (serialized with the poll loop)
   and answer with the repo state; with `commit` it also says whether that commit is part of the followed
   branch yet, so a client that has just pushed asks again until it is; another `branch` is ignored.
+- `GET /status` also carries `version`/`revision` of the daemon and, per job, `needs`: why work is pending
+  (absent, stale against git, interval over, early start), taken from the last scheduler pass.
 - `GET /logs/<container>[/<flavor>]?follow=1&tail=N`: build output as a streamed text
   response. The running build is kept in memory (last 512 KiB), the last finished one
   also; after a restart the last recorded log of the state database is served. With

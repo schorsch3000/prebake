@@ -70,8 +70,11 @@ type JobDTO struct {
 	LastRefresh  *time.Time `json:"last_refresh,omitempty"`
 	DateTag      string     `json:"date_tag,omitempty"`
 	Digest       string     `json:"digest,omitempty"`
-	NextKind     string     `json:"next_kind,omitempty"`
-	NextRun      *time.Time `json:"next_run,omitempty"`
+	// Needs says why work is pending: never built, missing from the registry, build inputs changed
+	// in git, an interval that ran out, or an early start in the slot.
+	Needs    string     `json:"needs,omitempty"`
+	NextKind string     `json:"next_kind,omitempty"`
+	NextRun  *time.Time `json:"next_run,omitempty"`
 }
 
 func tp(t time.Time) *time.Time {
@@ -93,7 +96,7 @@ func ToDTO(s daemon.Status, now time.Time) StatusDTO {
 			Container: j.Key.Container, Flavor: j.Key.Flavor, State: j.State, Error: j.Error, LastRun: j.LastRun,
 			RunningSince: tp(j.RunningSince),
 			LastRebuild:  tp(j.Image.LastRebuild), LastRefresh: tp(j.Image.LastRefresh),
-			DateTag: j.Image.DateTag, Digest: j.Image.Digest, NextRun: tp(j.NextRun),
+			DateTag: j.Image.DateTag, Digest: j.Image.Digest, NextRun: tp(j.NextRun), Needs: j.Needs,
 		}
 		if j.NextKind != schedule.None && !j.NextRun.IsZero() {
 			d.NextKind = j.NextKind.String()
@@ -303,7 +306,7 @@ pre{margin:0;white-space:pre-wrap}
 <tr><th>container</th><th>flavor</th><th>state</th><th>last rebuild</th><th>last refresh</th><th>next</th><th>image</th></tr>
 {{range .Jobs}}<tr>
 <td>{{.Container}}</td><td>{{.Flavor}}</td>
-<td><b class="{{.State}}">{{.State}}</b>{{if .Error}}<pre>{{.Error}}</pre>{{end}}</td>
+<td><b class="{{.State}}">{{.State}}</b>{{if .Needs}}<br><small>{{.Needs}}</small>{{end}}{{if .Error}}<pre>{{.Error}}</pre>{{end}}</td>
 <td>{{ts .LastRebuild}}</td><td>{{ts .LastRefresh}}</td>
 <td>{{if .NextKind}}{{.NextKind}} {{ts .NextRun}}{{else}}-{{end}}</td>
 <td>{{.DateTag}} <code>{{short .Digest}}</code></td>
