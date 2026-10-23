@@ -38,7 +38,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdInstallHook(args[1:], stdout, stderr)
 	case "show-key":
 		return cmdShowKey(args[1:], stdout, stderr)
-	case "daemon", "status", "trigger", "dry-run", "gc":
+	case "daemon":
+		return cmdDaemon(args[1:], stdout, stderr)
+	case "status", "trigger", "dry-run", "gc":
 		fmt.Fprintf(stderr, "prebake %s: not implemented\n", args[0])
 		return 2
 	default:

@@ -5,6 +5,8 @@ package state
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -50,6 +52,9 @@ var migrations = []string{
 func Open(path string) (*Store, error) {
 	dsn := path
 	if path != ":memory:" {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, err
+		}
 		dsn = "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
 	}
 	db, err := sql.Open("sqlite", dsn)

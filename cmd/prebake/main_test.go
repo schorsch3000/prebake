@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func runCLI(t *testing.T, args ...string) (code int, out, errOut string) {
@@ -186,5 +187,43 @@ func TestShowKey(t *testing.T) {
 	t.Setenv("DATA_DIR", dir)
 	if _, out3, _ := runCLI(t, "show-key"); out3 != out {
 		t.Errorf("DATA_DIR not honoured: %q", out3)
+	}
+}
+
+func TestParseDaemonConfig(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	var sink bytes.Buffer
+
+	if _, err := parseDaemonConfig(nil, env(nil), &sink); err == nil || !strings.Contains(err.Error(), "REPO_URL") {
+		t.Errorf("REPO_URL is required: %v", err)
+	}
+	c, err := parseDaemonConfig(nil, env(map[string]string{"REPO_URL": "git@h:me/r.git"}), &sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Branch != "main" || c.PollInterval != 5*time.Minute || c.DataDir != "/data" || c.ReadAddr != ":5000" ||
+		c.WriteAddr != ":5001" || c.RegistryHost != "localhost:5001" {
+		t.Errorf("defaults: %+v", c)
+	}
+	// env overrides, flags override env
+	c, err = parseDaemonConfig([]string{"--repo-branch", "dev", "--poll", "30s"}, env(map[string]string{
+		"REPO_URL": "u", "REPO_BRANCH": "stable", "POLL_INTERVAL": "1h", "DATA_DIR": "/x", "WRITE_ADDR": "127.0.0.1:6001",
+	}), &sink)
+	if err != nil || c.Branch != "dev" || c.PollInterval != 30*time.Second || c.DataDir != "/x" || c.RegistryHost != "localhost:6001" {
+		t.Errorf("%+v %v", c, err)
+	}
+	c, _ = parseDaemonConfig(nil, env(map[string]string{"REPO_URL": "u", "REGISTRY_HOST": "host.docker.internal:5001"}), &sink)
+	if c.RegistryHost != "host.docker.internal:5001" {
+		t.Errorf("REGISTRY_HOST: %q", c.RegistryHost)
+	}
+	for name, e := range map[string]map[string]string{
+		"bad poll":      {"REPO_URL": "u", "POLL_INTERVAL": "soon"},
+		"zero poll":     {"REPO_URL": "u", "POLL_INTERVAL": "0s"},
+		"cert only":     {"REPO_URL": "u", "TLS_CERT": "c.pem"},
+		"bad writeaddr": {"REPO_URL": "u", "WRITE_ADDR": "nonsense"},
+	} {
+		if _, err := parseDaemonConfig(nil, env(e), &sink); err == nil {
+			t.Errorf("%s must fail", name)
+		}
 	}
 }

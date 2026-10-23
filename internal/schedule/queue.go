@@ -57,6 +57,13 @@ func NewQueue(retryDelay time.Duration, parents map[string][]string) *Queue {
 	return &Queue{retryDelay: retryDelay, parents: parents, jobs: map[Key]*entry{}}
 }
 
+// SetRetryDelay changes the delay for future failures (after a config reload).
+func (q *Queue) SetRetryDelay(d time.Duration) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.retryDelay = d
+}
+
 // SetParents replaces the dependency graph (after a config reload).
 func (q *Queue) SetParents(parents map[string][]string) {
 	q.mu.Lock()
@@ -80,6 +87,16 @@ func (q *Queue) removeFromOrder(k Key) {
 			return
 		}
 	}
+}
+
+// RestoreParked puts a key back into the parked state after a restart. It is
+// replaced by a normal queue entry as soon as the job is triggered or unparked.
+func (q *Queue) RestoreParked(k Key, kind Kind, failures int, errMsg string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	e := q.get(k)
+	e.Kind, e.failures, e.Err, e.status = kind, failures, errMsg, Parked
+	q.removeFromOrder(k)
 }
 
 // Enqueue adds a scheduled job. It is a no-op for a job that is already
