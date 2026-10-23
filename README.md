@@ -74,6 +74,7 @@ containers/
 
 | key | default | meaning |
 |---|---|---|
+| `root_files` | none | extra files or directories (globs) allowed at the repo root; see below |
 | `slots` | `["02:00-06:00"]` | build windows in the daemon's time zone (the host's, see `TZ`); may cross midnight |
 | `defaults.rebuild_interval` | `7d` | full rebuild (`--no-cache --pull`); units `s m h d w` |
 | `defaults.refresh_interval` | `1d` | cheap refresh: previous image plus `refresh_cmd` |
@@ -94,8 +95,14 @@ containers/
 | `tests` | shell commands (`sh -c`) run on the candidate image as `RUN` steps of a throwaway build, so no container is started; any failure stops promotion |
 | `extra_files` | globs for files the Dockerfile does not `COPY` but that may stay in the directory |
 
-Unknown keys are errors. Stray files in a container directory (not referenced
-by the Dockerfile, not in `extra_files`) are errors too.
+Unknown keys are errors. Stray files are errors too, in three places:
+- in a container directory: files that the Dockerfile does not `COPY`/`ADD` and that are not listed in `extra_files`
+  (with `COPY .` everything is copied, so nothing can be stray there, and `validate` warns about that);
+- directly under `containers/`: only container directories belong there;
+- at the repo root: only `prebake.yaml`, `containers/` and repository furniture (`README*`, `LICENSE*`, `COPYING*`,
+  `NOTICE*`, `.gitignore`, `.gitattributes`, `.editorconfig`, `.pre-commit-config.yaml`, `.github/`, `.gitlab-ci.yml`).
+  Anything else is listed in the error; if it is meant to be there, add it to `root_files:` in `prebake.yaml`, e.g.
+  `root_files: ["docs", "notes.md"]` (a directory allows everything below it).
 
 ### Schedule rules
 

@@ -78,6 +78,7 @@ func Dir(dir string) *Result { return FS(os.DirFS(dir)) }
 func FS(fsys fs.FS) *Result {
 	r := &Result{}
 	r.global(fsys)
+	r.rootFiles(fsys)
 	r.containers(fsys)
 	sort.SliceStable(r.Issues, func(i, j int) bool {
 		a, b := r.Issues[i], r.Issues[j]
@@ -253,7 +254,7 @@ func (r *Result) container(fsys fs.FS, name string) *container {
 		}
 	}
 
-	referenced := r.checkCopies(fsys, dir, dfPath, df)
+	referenced, copiesAll := r.checkCopies(fsys, dir, dfPath, df)
 	if cfg != nil && len(cfg.DependsOn) > 0 && df != nil && !declaresArg(df, "PARENT") {
 		r.add(Warning, dfPath, 0, "depends_on is set but the Dockerfile has no 'ARG PARENT' to receive the parent image")
 	}
@@ -261,7 +262,9 @@ func (r *Result) container(fsys fs.FS, name string) *container {
 	if cfg != nil {
 		extra = cfg.ExtraFiles
 	}
-	r.strayFiles(fsys, dir, referenced, extra)
+	if !copiesAll { // with COPY . every file in the directory is part of the image
+		r.strayFiles(fsys, dir, referenced, extra)
+	}
 
 	if cfg == nil {
 		return nil
@@ -283,8 +286,7 @@ func declaresArg(df []instruction, name string) bool {
 
 // checkCopies verifies COPY/ADD sources and returns the referenced paths
 // (relative to the container dir, cleaned) that stray-file detection must allow.
-func (r *Result) checkCopies(fsys fs.FS, dir, dfPath string, df []instruction) []string {
-	var refs []string
+func (r *Result) checkCopies(fsys fs.FS, dir, dfPath string, df []instruction) (refs []string, copiesAll bool) {
 	for _, in := range df {
 		if in.Cmd != "COPY" && in.Cmd != "ADD" {
 			continue
@@ -314,10 +316,14 @@ func (r *Result) checkCopies(fsys fs.FS, dir, dfPath string, df []instruction) [
 				r.add(Error, dfPath, in.Line, "%s source %q does not exist", in.Cmd, s)
 				continue
 			}
+			if clean == "." {
+				copiesAll = true
+				r.add(Warning, dfPath, in.Line, "%s %q copies the whole directory, so stray files in it cannot be detected; list the files you need instead", in.Cmd, s)
+			}
 			refs = append(refs, clean)
 		}
 	}
-	return refs
+	return refs, copiesAll
 }
 
 func isURL(s string) bool {
@@ -430,5 +436,70 @@ func (r *Result) dependencies(cs []container) {
 		if color[n] == white {
 			visit(n)
 		}
+	}
+}
+
+// rootAllowed are the files and directories that may sit at the repo root next to prebake.yaml
+// and containers/ (globs; a directory pattern allows everything below it).
+var rootAllowed = []string{
+	config.GlobalFile, "README*", "LICENSE*", "COPYING*", "NOTICE*",
+	".gitignore", ".gitattributes", ".editorconfig", ".pre-commit-config.yaml", ".github", ".gitlab-ci.yml",
+}
+
+const maxRootStrays = 20
+
+// rootFiles reports stray files at the repo root: anything but the global config, containers/ and
+// the usual repository furniture (see rootAllowed) unless prebake.yaml lists it in root_files.
+func (r *Result) rootFiles(fsys fs.FS) {
+	allowed := append([]string(nil), rootAllowed...)
+	if r.Global != nil {
+		for _, p := range r.Global.RootFiles {
+			if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "..") {
+				r.add(Error, config.GlobalFile, 0, "invalid root_files pattern %q", p)
+				continue
+			}
+			allowed = append(allowed, p)
+		}
+	}
+	matches := func(rel string) bool {
+		segs := strings.Split(rel, "/")
+		for i := 1; i <= len(segs); i++ {
+			prefix := strings.Join(segs[:i], "/")
+			for _, p := range allowed {
+				if matchGlob(strings.TrimSuffix(p, "/"), prefix) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	var strays []string
+	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if p == "." {
+			return nil
+		}
+		if d.IsDir() && (p == config.ContainersDir || p == ".git") { // containers/ has its own checks; .git is git's
+			return fs.SkipDir
+		}
+		if d.IsDir() {
+			if matches(p) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !matches(p) {
+			strays = append(strays, p)
+		}
+		return nil
+	})
+	for i, f := range strays {
+		if i == maxRootStrays {
+			r.add(Error, ".", 0, "... and %d more stray files at the repo root", len(strays)-maxRootStrays)
+			break
+		}
+		r.add(Error, f, 0, "stray file at the repo root: only prebake.yaml, containers/ and repository files (README*, LICENSE*, .gitignore, .github/, ...) belong here; list it under root_files: in prebake.yaml if it is meant to be there")
 	}
 }

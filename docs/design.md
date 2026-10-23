@@ -228,7 +228,10 @@ is provided for the pre-commit framework (`pass_filenames: false`,
 - Slots valid, intervals parse, `keep` per container `<=` global `keep`.
 - Every dir under `containers/` has `Dockerfile` and `container.yaml`; dir name is
   a valid image name; no loose files directly under `containers/`.
-- Stray files: allowed are `Dockerfile`, `container.yaml`, files referenced by
+- Stray files at the repo root: only `prebake.yaml`, `containers/`, repository furniture (README*, LICENSE*,
+  .gitignore, .github/, ...) and what `root_files` lists. `COPY .`/`ADD .` makes every file of the container
+  directory part of the image: no stray check there, but a warning.
+- Stray files in a container directory: allowed are `Dockerfile`, `container.yaml`, files referenced by
   `COPY`/`ADD`, and globs from `extra_files`. Anything else is an error.
 - `COPY`/`ADD` sources exist and do not escape the container directory.
 - `depends_on` targets exist; no cycles.

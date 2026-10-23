@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -247,5 +248,75 @@ func TestDependsOnNeedsDefaultFlavor(t *testing.T) {
 	m["containers/gpu/container.yaml"] = "flavors:\n  default: {}\n  cuda: {}\ntests: [\"true\"]\n"
 	if r := FS(repo(m)); r.Errors() != 0 {
 		t.Errorf("a parent with a default flavor is fine: %v", r.Issues)
+	}
+}
+
+func TestStrayFilesAtTheRepoRoot(t *testing.T) {
+	m := base()
+	m["stray.txt"] = "x"
+	m["notes/todo.md"] = "x"
+	m["README.md"] = "x"
+	m["LICENSE"] = "x"
+	m[".gitignore"] = "x"
+	m[".github/workflows/ci.yml"] = "x"
+	m[".pre-commit-config.yaml"] = "x"
+	r := FS(repo(m))
+	if !has(r, Error, "stray.txt: stray file at the repo root") || !has(r, Error, "notes/todo.md: stray file at the repo root") {
+		t.Fatalf("root strays must be reported: %v", r.Issues)
+	}
+	for _, ok := range []string{"README.md", "LICENSE", ".gitignore", ".github", ".pre-commit-config.yaml", "prebake.yaml"} {
+		for _, i := range r.Issues {
+			if i.File == ok || strings.HasPrefix(i.File, ok+"/") {
+				t.Errorf("%s belongs at the root: %v", ok, i)
+			}
+		}
+	}
+	// the hint names the escape hatch
+	if !has(r, Error, "root_files") {
+		t.Errorf("the message should mention root_files: %v", r.Issues)
+	}
+	// ... which works, for files and for directories
+	m["prebake.yaml"] = goodGlobal + "root_files: [\"stray.txt\", \"notes\"]\n"
+	if r := FS(repo(m)); r.Errors() != 0 {
+		t.Errorf("root_files: %v", r.Issues)
+	}
+	m["prebake.yaml"] = goodGlobal + "root_files: [\"/etc\", \"..\"]\n"
+	if r := FS(repo(m)); !has(r, Error, "invalid root_files pattern") {
+		t.Errorf("bad patterns: %v", r.Issues)
+	}
+}
+
+func TestManyRootStraysAreCapped(t *testing.T) {
+	m := base()
+	for i := 0; i < 50; i++ {
+		m[fmt.Sprintf("junk/f%02d.txt", i)] = "x"
+	}
+	r := FS(repo(m))
+	n := 0
+	for _, i := range r.Issues {
+		if strings.Contains(i.Msg, "stray file at the repo root") {
+			n++
+		}
+	}
+	if n != maxRootStrays || !has(r, Error, "and 30 more stray files") {
+		t.Errorf("reported %d: %v", n, r.Issues)
+	}
+}
+
+func TestCopyDotCopiesEverythingAndSaysSo(t *testing.T) {
+	m := base()
+	m["containers/dev/Dockerfile"] = "FROM debian\nCOPY . /app\n"
+	m["containers/dev/junk.txt"] = "x"
+	r := FS(repo(m))
+	if r.Errors() != 0 {
+		t.Errorf("with COPY . the file is copied, it is not stray: %v", r.Issues)
+	}
+	if !has(r, Warning, "copies the whole directory") {
+		t.Errorf("the check cannot work there, and the user must be told: %v", r.Issues)
+	}
+	// ./ and ADD work the same way
+	m["containers/dev/Dockerfile"] = "FROM debian\nADD ./ /app\n"
+	if r := FS(repo(m)); r.Errors() != 0 || !has(r, Warning, "copies the whole directory") {
+		t.Errorf("ADD ./: %v", r.Issues)
 	}
 }

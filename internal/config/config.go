@@ -21,6 +21,9 @@ const (
 )
 
 type Global struct {
+	// RootFiles are extra files and directories (globs) that may sit at the repo root next to
+	// prebake.yaml and containers/. Anything else there is a stray file.
+	RootFiles  []string `yaml:"root_files"`
 	Slots      []Slot   `yaml:"slots"`
 	Defaults   Defaults `yaml:"defaults"`
 	RetryDelay Duration `yaml:"retry_delay"`
