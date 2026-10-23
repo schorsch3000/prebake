@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/schorsch3000/prebake/internal/gitsync"
 )
 
 const hookMarker = "# prebake-managed"
@@ -26,7 +28,7 @@ func cmdInstallHook(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	// --git-path resolves core.hooksPath and linked worktrees correctly
-	out, err := git(*repo, "rev-parse", "--git-path", "hooks/pre-commit").Output()
+	out, err := gitsync.Git(*repo, "rev-parse", "--git-path", "hooks/pre-commit").Output()
 	if err != nil {
 		fmt.Fprintf(stderr, "prebake install-hook: %s is not a git repository\n", *repo)
 		return 2

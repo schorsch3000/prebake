@@ -169,3 +169,22 @@ func TestInstallHook(t *testing.T) {
 		t.Errorf("non-repo: %d", code)
 	}
 }
+
+func TestShowKey(t *testing.T) {
+	dir := t.TempDir()
+	code, out, errOut := runCLI(t, "show-key", "--data-dir", dir)
+	if code != 0 || !strings.HasPrefix(out, "ssh-ed25519 AAAA") || !strings.Contains(errOut, "fingerprint: SHA256:") {
+		t.Fatalf("%d %q %q", code, out, errOut)
+	}
+	if st, err := os.Stat(filepath.Join(dir, "ssh", "id_ed25519")); err != nil || st.Mode().Perm() != 0o600 {
+		t.Errorf("key file: %v %v", err, st)
+	}
+	// stable across runs
+	if _, out2, _ := runCLI(t, "show-key", "--data-dir", dir); out2 != out {
+		t.Errorf("key changed: %q vs %q", out, out2)
+	}
+	t.Setenv("DATA_DIR", dir)
+	if _, out3, _ := runCLI(t, "show-key"); out3 != out {
+		t.Errorf("DATA_DIR not honoured: %q", out3)
+	}
+}
