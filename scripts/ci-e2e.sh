@@ -12,17 +12,20 @@ export CI_ORIGIN=$origin CI_GITCONFIG=$gitconfig REPO_URL=/origin.git
 # PREBAKE_PROXY=1 runs the daemon behind the filtering docker socket proxy.
 # Order matters: the proxy file overrides the base volumes, the CI file adds to them.
 compose=(docker compose -f docker-compose.yaml)
-if [ "${PREBAKE_PROXY:-}" = 1 ]; then compose+=(-f docker-compose.proxy.yaml); fi
+if [ "${PREBAKE_PROXY:-}" = 1 ]; then
+  compose+=(-f docker-compose.proxy.yaml)
+  export PROXY_LOGLEVEL=debug   # log allowed requests too, to see what the daemon asks for
+fi
 compose+=(-f docker-compose.ci.yaml)
 status=http://localhost:8080/status
 
 dump_logs() {
   "${compose[@]}" logs --no-color prebake | tail -n 150 || true
   if [ "${PREBAKE_PROXY:-}" = 1 ]; then
-    echo "--- docker-proxy: refused requests (403) ---"
-    "${compose[@]}" logs --no-color docker-proxy | grep ' 403 ' | tail -n 40 || true
-    echo "--- docker-proxy: all requests except the healthcheck ping ---"
-    "${compose[@]}" logs --no-color docker-proxy | grep -v 'GET /_ping' | tail -n 80 || true
+    echo "--- docker-proxy: blocked requests ---"
+    "${compose[@]}" logs --no-color docker-proxy | grep -i 'block\|forbidden\|denied\|not allowed' | tail -n 40 || true
+    echo "--- docker-proxy: log tail ---"
+    "${compose[@]}" logs --no-color docker-proxy | tail -n 120 || true
     echo "--- docker as seen by the daemon container ---"
     # shellcheck disable=SC2016 # expanded by the shell inside the container, not here
     "${compose[@]}" exec -T prebake sh -c 'echo DOCKER_HOST=$DOCKER_HOST; docker version 2>&1 | head -20; echo "-- trivial build:"; echo "FROM scratch" | docker buildx build --progress=plain -f - /tmp >/tmp/diag.out 2>&1; echo "exit=$?"; tail -20 /tmp/diag.out; echo "-- docker images:"; docker images 2>&1 | head -5; echo "-- buildx ls:"; docker buildx ls 2>&1 | head -8; echo "-- buildx version:"; docker buildx version 2>&1' || true

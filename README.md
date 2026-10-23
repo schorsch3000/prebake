@@ -180,12 +180,14 @@ Flags override variables; see `prebake daemon --help`.
   ```
 
   The daemon then has no socket; it talks to
-  [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)
-  (pinned to v0.5.0 by digest) over an internal network, and the proxy only lets
+  [wollomatic/socket-proxy](https://github.com/wollomatic/socket-proxy)
+  (pinned to 1.13.1 by digest) over an internal network, and the proxy only lets
   through what building and publishing images needs: build, pull, tag, push,
   remove. It cannot create containers or exec. This only works because smoke
   tests run as build steps: the proxy filters by URL and method, not by request
-  body, so allowing container creation would allow privileged containers. Needs
+  body, so allowing container creation would allow privileged containers. The
+  popular HAProxy-based Tecnativa proxy does not work: it drops the `h2c` upgrade
+  that buildx uses, see the comments in `docker-compose.proxy.yaml`. Needs
   Docker Compose 2.24 or newer. CI runs the end-to-end test in both modes.
   Note that the build itself still runs the Dockerfiles of your config repo, so
   only point prebake at repos you trust.

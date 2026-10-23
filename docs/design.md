@@ -307,11 +307,15 @@ parked/retry state. Logs go to stdout; build logs are kept per job (bounded).
   `8080:8080` (status).
 - env: `REPO_URL` (required), optional Pushover and TLS.
 - Docker socket access is root-equivalent on the host. `docker-compose.proxy.yaml`
-  replaces the socket mount with Tecnativa/docker-socket-proxy (v0.5.0, pinned
-  by digest) on an internal network, allowing only `POST`, `BUILD`, `SESSION`,
-  `GRPC`, `IMAGES` and `INFO`. The proxy filters by path prefix and method, not
-  by body, so it only restricts anything if containers stay out of reach; that is
-  the reason smoke tests run as build steps (§7) rather than `docker run`.
+  replaces the socket mount with wollomatic/socket-proxy (1.13.1, pinned by
+  digest) on an internal network, with a per-method regexp allowlist for build,
+  grpc/session (buildx), and image inspect/pull/tag/push/remove. The proxy filters
+  by method and path, not by body, so it only restricts anything if containers
+  stay out of reach; that is the reason smoke tests run as build steps (§7)
+  rather than `docker run`. Tecnativa/docker-socket-proxy (HAProxy) was tried
+  first and does not work: HAProxy does not forward buildx's `Upgrade: h2c` on
+  `POST /grpc`, so buildx drops from the docker driver to docker-container, which
+  needs container API access.
 
 ## 16. Implementation
 

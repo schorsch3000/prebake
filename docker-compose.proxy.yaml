@@ -3,34 +3,48 @@
 #
 #   docker compose -f docker-compose.yaml -f docker-compose.proxy.yaml up -d --build
 #
-# The proxy (Tecnativa/docker-socket-proxy, HAProxy) filters by URL prefix and
-# HTTP method only. That is why prebake runs smoke tests as build steps instead
-# of `docker run`: with CONTAINERS + POST enabled anybody could start a
-# privileged container and the proxy would protect nothing. As configured here
-# the daemon can build, pull, tag, push and remove images, and nothing else.
+# The proxy (wollomatic/socket-proxy, a small Go program) allows requests by HTTP
+# method and URL path only, never by request body. That is why prebake runs smoke
+# tests as build steps instead of `docker run`: if container creation were allowed,
+# anybody could start a privileged container and the proxy would protect nothing.
+# As configured here the daemon can build, pull, tag, push and remove images, and
+# nothing else.
+#
+# Why not Tecnativa/docker-socket-proxy (HAProxy)? buildx talks to the Docker engine
+# through `POST /grpc` with `Upgrade: h2c`; HAProxy does not pass that upgrade on, the
+# engine answers 500, and buildx then falls back to a docker-container builder, which
+# needs container access. A Go reverse proxy passes the upgrade through.
+#
 # Needs Docker Compose >= 2.24 (`!override`).
 services:
   docker-proxy:
-    # pinned to v0.5.0 by digest; update deliberately
-    image: tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
+    # pinned to 1.13.1 by digest; update deliberately
+    image: wollomatic/socket-proxy:1.13.1@sha256:3935b709275e4ec35d6ed5a5c4a1f0d01ed31eec5e7234efc3357ecd47689002
     restart: unless-stopped
     environment:
-      POST: 1          # needed for build, tag, push, pull and image removal
-      BUILD: 1         # POST /build
-      SESSION: 1       # buildx: /session
-      GRPC: 1          # buildx: /grpc
-      IMAGES: 1        # inspect, tag, push, pull, remove
-      INFO: 1          # buildx asks /info
-      # everything else stays off, in particular CONTAINERS, EXEC, VOLUMES, NETWORKS, SECRETS, SERVICES, SWARM, SYSTEM
+      SP_LISTENIP: 0.0.0.0
+      SP_ALLOWFROM: prebake              # only the daemon's service name may connect
+      SP_ALLOWHEALTHCHECK: "true"
+      SP_LOGLEVEL: ${PROXY_LOGLEVEL:-info}   # blocked requests are always logged
+      # Anchored regexps per method. Everything not listed is refused.
+      SP_ALLOW_HEAD: '/_ping'
+      SP_ALLOW_GET: '(/_ping|/v1\.\d+/(version|info|images/.*))'
+      # buildx: /grpc and /session (unversioned or versioned), /build; images: tag, push, pull
+      SP_ALLOW_POST: '((/v1\.\d+)?/(grpc|session)|/v1\.\d+/(build|images/.*))'
+      SP_ALLOW_DELETE: '/v1\.\d+/images/.*'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - docker-api
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
-      # /_ping is allowed by default; the daemon must not start before the proxy listens
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2375/_ping || exit 1"]
+      test: ["CMD", "./healthcheck"]
       interval: 2s
-      timeout: 3s
+      timeout: 5s
       retries: 30
 
   prebake:
