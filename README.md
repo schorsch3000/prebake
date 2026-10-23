@@ -92,7 +92,7 @@ containers/
 | `refresh_cmd` | run on top of the previous image, e.g. `apt-get update && apt-get upgrade -y`. Without it a refresh becomes a rebuild |
 | `rebuild_interval`, `refresh_interval` | override the defaults |
 | `keep` | per-container keep, must not exceed the global `keep` |
-| `depends_on` | parent containers; they are built first, and `ARG PARENT` receives `<registry>/<parent>:latest` (also `PARENT_<NAME>`) |
+| `depends_on` | list of parent containers, built first; the Dockerfile receives each as `PARENT_<NAME>` and the first also as `PARENT` (see "Parents" below) |
 | `flavors` | `name: {args: {K: V}}`, one image per flavor, build args from `args` |
 | `tests` | shell commands (`sh -c`) run on the candidate image as `RUN` steps of a throwaway build, so no container is started; any failure stops promotion |
 | `extra_files` | globs for files the Dockerfile does not `COPY` but that may stay in the directory |
@@ -128,11 +128,20 @@ Unknown keys are errors. Stray files are errors too, in three places:
 
 ### Parents: `depends_on` and `PARENT`
 
-`depends_on` is a list because a container may build on several others. At every build prebake gives the Dockerfile
-one build arg per parent, naming the parent's image: `PARENT_<NAME>` (the container name in upper case, other characters
-become `_`: `base` is `PARENT_BASE`, `dev-go` is `PARENT_DEV_GO`), and for the **first** parent of the list also plain
-`PARENT`. The value is `<registry>/<parent>:latest`, i.e. the newest image of the parent's `default` flavor, as the Docker host
-sees the registry (`REGISTRY_HOST`). A Dockerfile has to declare the args it wants, before `FROM` if `FROM` uses them:
+`depends_on` is a list because a container may build on several others. At every build prebake passes one build arg
+per parent to the Dockerfile, and plain `PARENT` for the **first** parent of the list. For `depends_on: [base, tools]`:
+
+| build arg | value | |
+|---|---|---|
+| `PARENT` | `<registry>/base:latest` | the first parent only |
+| `PARENT_BASE` | `<registry>/base:latest` | one per parent |
+| `PARENT_TOOLS` | `<registry>/tools:latest` | one per parent |
+
+- The name is `PARENT_` plus the container name in upper case; every run of other characters becomes `_`
+  (`base` gives `PARENT_BASE`, `dev-go` gives `PARENT_DEV_GO`, `tools.v2` gives `PARENT_TOOLS_V2`).
+- The value is the newest image of the parent's `default` flavor. `<registry>` is the registry **as the Docker host that
+  builds sees it** (`REGISTRY_HOST`, for example `localhost:6001`), not the public name your clients use.
+- A Dockerfile has to declare the args it wants, before `FROM` if `FROM` uses them; Docker ignores undeclared build args.
 
 ```yaml
 depends_on: [base]                 # one parent: ARG PARENT or ARG PARENT_BASE, both work
@@ -152,12 +161,18 @@ FROM ${PARENT_BASE}
 COPY --from=tools /usr/local/bin/mytool /usr/local/bin/
 ```
 
-`validate` warns when a parent has no matching `ARG`, and refuses two parents whose names would give the same arg
-(`a-b` and `a.b`) and a parent that declares flavors but no `default` one (its `:latest` would never exist). Scheduling
-follows from this: a parent is built before its child when both are due, a triggered child also builds parents that were
-never built, a failed parent makes its children `skipped`, and cycles are errors. A parent being rebuilt does **not** rebuild
-its children: a child picks up the new parent the next time it is **rebuilt** itself (a refresh stacks on the child's own
-previous image and does not look at the parent again).
+`validate` warns when a parent has no matching `ARG` (the first parent also accepts plain `PARENT`), refuses two parents whose
+names would give the same arg (`a-b` and `a.b`), and refuses a parent that declares flavors but no `default` one (its
+`:latest` would never exist).
+
+**Order.** A parent is built before its child when both are due. `prebake trigger child` also builds parents that were never
+built. A failed parent makes its children `skipped`. Cycles are errors.
+
+**A child follows its parent only when the child is rebuilt.** A parent being rebuilt does *not* rebuild its children. A
+child picks up the new parent the next time it is **rebuilt** itself; a refresh stacks on the child's own previous image and
+does not look at the parent again. With the default `rebuild_interval` of 7 days a child can therefore be up to a week behind
+its parent. To keep it closer, give the child a shorter `rebuild_interval` in its `container.yaml`, or run
+`prebake trigger <child>` after the parent changed.
 
 ### Containers that are removed from the config
 
