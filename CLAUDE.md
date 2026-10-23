@@ -15,6 +15,7 @@ Design: `docs/design.md` (source of truth; update it when decisions change).
 - Secrets (Pushover) come from env or Docker secrets, never from the config repo.
 - Tests: schedule math, validator and retention selection need unit tests and must not need Docker.
 - Run `go vet ./...` and `go test ./...` before declaring work done.
+- Docker-dependent tests live behind `//go:build integration` (`make test-integration`, needs Docker and a registry on `localhost:5001`). They run in GitHub Actions (`.github/workflows/ci.yml`); the dev container has no Docker.
 
 ## Workflow
 
