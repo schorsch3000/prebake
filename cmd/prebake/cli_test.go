@@ -474,3 +474,29 @@ func TestLogsFollowEndsOnCtrlC(t *testing.T) {
 		t.Errorf("Ctrl-C ends a followed stream quietly: %d %q %q", code, out, e)
 	}
 }
+
+// examples/status-demo/status is documented as a way to try the client without a daemon: it must
+// stay valid and show every state.
+func TestStatusDemoFileRendersEveryState(t *testing.T) {
+	b, err := os.ReadFile("../../examples/status-demo/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := statusServer(t, string(b))
+	code, out, e := runCLI(t, "status", "--color", "never", "--url", srv.URL)
+	if code != 0 {
+		t.Fatalf("%d %s", code, e)
+	}
+	for _, want := range []string{"repo: degraded", "idle", "building 3m12s", "queued", "retrying", "parked", "skipped", "never", "CET +01:00"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status lacks %q:\n%s", want, out)
+		}
+	}
+	code, out, _ = runCLI(t, "dry-run", "--color", "never", "--url", srv.URL)
+	if code != 0 || !strings.Contains(out, "now") || !strings.Contains(out, "15m0s") || !strings.Contains(out, "(parked)") {
+		t.Errorf("dry-run: %d\n%s", code, out)
+	}
+	if _, colored, _ := runCLI(t, "status", "--color", "always", "--url", srv.URL); !strings.Contains(colored, ansiRed+"parked") || !strings.Contains(colored, ansiYellow+"building") {
+		t.Error("colors")
+	}
+}
