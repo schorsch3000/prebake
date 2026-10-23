@@ -1,3 +1,4 @@
 .gopath/
 bin/
 .idea/
+logs_*/
