@@ -39,6 +39,11 @@ var commands = []cmdSpec{
 		{Name: "watch", Short: "w", Help: "live view: redraw until Ctrl-C (needs a terminal)"},
 		{Name: "interval", Short: "n", Value: "text", Help: "refresh interval for --watch, e.g. 1s (default 2s)"},
 	}},
+	{Name: "logs", Group: groupClient, Help: "show the build output of a container (-f follows a running build)", Args: "containers", Flags: []flagSpec{
+		fURL,
+		{Name: "follow", Short: "f", Help: "follow a running build until it ends; waits for a queued one to start"},
+		{Name: "tail", Value: "text", Help: "only the last N lines"},
+	}},
 	{Name: "dry-run", Group: groupClient, Help: "show what is due when", Flags: []flagSpec{fURL, fColor}},
 	{Name: "trigger", Group: groupClient, Help: "queue a rebuild or refresh now", Args: "containers", Flags: []flagSpec{
 		fURL,

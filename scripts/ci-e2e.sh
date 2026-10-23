@@ -102,6 +102,13 @@ docker image rm -f localhost:$write_port/ci-demo:latest >/dev/null 2>&1 || true
 docker pull -q localhost:$read_port/ci-demo:latest
 test "$(docker run --rm localhost:$read_port/ci-demo:latest cat /base)" = base
 
+echo "== build output: the last build's log, and a build followed live until it ends"
+"${compose[@]}" exec -T prebake prebake logs ci-demo --tail 30 > "$work/logs.txt"
+grep -q DONE "$work/logs.txt"
+curl -fsS -X POST "http://localhost:$status_port/trigger/ci-demo?kind=rebuild" >/dev/null
+timeout 300 "${compose[@]}" exec -T prebake prebake logs -f ci-demo > "$work/follow.txt"
+grep -q DONE "$work/follow.txt"
+
 echo "== CLI inside the container"
 "${compose[@]}" exec -T prebake prebake status
 "${compose[@]}" exec -T prebake prebake dry-run

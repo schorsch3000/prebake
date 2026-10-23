@@ -95,6 +95,7 @@ type Daemon struct {
 	gcForce    bool                       // manual request: ignore gc_slot_only
 	lastRun    map[schedule.Key]string    // last result summary for status
 	running    map[schedule.Key]time.Time // builds in progress and when they started
+	logs       map[schedule.Key]*LiveLog  // output of the current or last build in this process
 
 	backoff time.Duration // current sync retry backoff
 	wake    chan struct{}
@@ -112,6 +113,7 @@ func New(opts Options, src Source, b Builder, reg Registry, store *state.Store, 
 		failing: map[schedule.Key]bool{},
 		lastRun: map[schedule.Key]string{},
 		running: map[schedule.Key]time.Time{},
+		logs:    map[schedule.Key]*LiveLog{},
 		wake:    make(chan struct{}, 1),
 	}
 }

@@ -150,7 +150,8 @@ it is reloaded when the files change), add the CA to
 ## Operating it
 
 ```sh
-prebake status [--json]
+prebake status [--json] [--watch]
+prebake logs <container>[:<flavor>] [-f] [--tail N]
 prebake dry-run
 prebake trigger <container>[:<flavor>] [--kind rebuild|refresh]
 prebake gc
@@ -159,7 +160,7 @@ prebake show-key
 
 The client commands talk to the status API (`--url` or `PREBAKE_URL`, default
 `http://127.0.0.1:8080`); in Compose run them with `docker compose exec prebake prebake ...`.
-API: `GET /status` (JSON), `GET /pubkey`, `POST /trigger/<container>[/<flavor>]?kind=...`, `POST /gc`.
+API: `GET /status` (JSON), `GET /logs/<container>[/<flavor>][?follow=1&tail=N]` (build output, streamed), `GET /pubkey`, `POST /trigger/<container>[/<flavor>]?kind=...`, `POST /gc`.
 
 ### Notifications
 
@@ -260,6 +261,12 @@ switch it off, `--color always|never|auto` overrides.
 view that redraws in place until Ctrl-C, shows how long a running build has been going, and
 keeps going when the daemon restarts. It needs a terminal; in scripts, loop around plain
 `prebake status`.
+
+`prebake logs dev` prints the build output of the build in progress, or of the last one (kept
+over restarts). `prebake logs -f dev` follows a running build until it ends and waits for a queued
+one to start, so `prebake trigger dev && prebake logs -f dev` just works; Ctrl-C leaves it. `--tail 50`
+shows only the last lines. Build output can contain whatever your Dockerfiles print, and the API
+has no authentication, like the rest of it.
 
 `prebake daemon` is the service itself, what the container image runs; the other commands are
 the client. You normally never run `daemon` on your workstation.

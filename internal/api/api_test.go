@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,9 @@ type fakeBackend struct {
 	err       error
 	also      []string
 	gcs       int
+	logCalls  []string
+	logErr    error
+	logStream daemon.LogStream
 }
 
 func (f *fakeBackend) Status() daemon.Status { return f.status }
@@ -30,6 +34,39 @@ func (f *fakeBackend) Trigger(c, fl string, k schedule.Kind) ([]string, error) {
 	return f.also, f.err
 }
 func (f *fakeBackend) RequestGC() { f.gcs++ }
+
+// fakeStream plays a LogStream: it writes its lines, flushing each, and (with follow) waits for
+// release before ending, like a build that is still running.
+type fakeStream struct {
+	lines   []string
+	release chan struct{}
+	gotArgs *string
+}
+
+func (f fakeStream) Stream(ctx context.Context, w io.Writer, follow bool, tail int, flush func()) error {
+	if f.gotArgs != nil {
+		*f.gotArgs = fmt.Sprintf("follow=%v tail=%d", follow, tail)
+	}
+	for _, l := range f.lines {
+		io.WriteString(w, l+"\n")
+		flush()
+	}
+	if follow && f.release != nil {
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+		}
+	}
+	return nil
+}
+
+func (f *fakeBackend) Logs(c, fl string, follow bool) (daemon.LogStream, error) {
+	f.logCalls = append(f.logCalls, fmt.Sprintf("%s/%s/follow=%v", c, fl, follow))
+	if f.logErr != nil {
+		return nil, f.logErr
+	}
+	return f.logStream, nil
+}
 
 var t0 = time.Date(2026, 10, 22, 2, 0, 0, 0, time.UTC)
 
@@ -235,4 +272,100 @@ func TestStatusJSONCarriesRunningSince(t *testing.T) {
 	if strings.Count(body, "running_since") != 1 {
 		t.Errorf("only a running job carries it:\n%s", body)
 	}
+}
+
+func TestLogsEndpointStreamsWhileTheBuildRuns(t *testing.T) {
+	var args string
+	release := make(chan struct{})
+	b := fixture()
+	b.logStream = fakeStream{lines: []string{"#1 first", "#2 second"}, release: release, gotArgs: &args}
+	srv := serve(t, b)
+
+	resp, err := http.Get(srv.URL + "/logs/base/default?follow=1&tail=20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain") || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("%d %v", resp.StatusCode, resp.Header)
+	}
+	// the first lines arrive while the stream is still open: it is flushed, not buffered until the end
+	buf := make([]byte, 64)
+	n, err := resp.Body.Read(buf)
+	if err != nil || !strings.HasPrefix(string(buf[:n]), "#1 first") {
+		t.Fatalf("first chunk: %q %v", buf[:n], err)
+	}
+	close(release)
+	rest, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(buf[:n])+string(rest), "#2 second") {
+		t.Errorf("rest: %q", rest)
+	}
+	if args != "follow=true tail=20" {
+		t.Errorf("query not passed on: %q", args)
+	}
+	if got := strings.Join(b.logCalls, ","); got != "base/default/follow=true" {
+		t.Errorf("calls = %s", got)
+	}
+}
+
+func TestLogsEndpointVariantsAndErrors(t *testing.T) {
+	b := fixture()
+	b.logStream = fakeStream{lines: []string{"hello"}}
+	srv := serve(t, b)
+	if code, body, _ := get(t, srv.URL+"/logs/base"); code != 200 || body != "hello\n" {
+		t.Errorf("plain: %d %q", code, body)
+	}
+	if got := strings.Join(b.logCalls, ","); got != "base//follow=false" {
+		t.Errorf("a missing flavor is passed on empty: %s", got)
+	}
+	if code, _, _ := get(t, srv.URL+"/logs/base?tail=x"); code != 400 {
+		t.Errorf("bad tail: %d", code)
+	}
+	if code, _, _ := get(t, srv.URL+"/logs/base?tail=-1"); code != 400 {
+		t.Errorf("negative tail: %d", code)
+	}
+	for err, want := range map[error]int{
+		fmt.Errorf("%w: x", daemon.ErrNotFound): 404, daemon.ErrNoLogs: 404, daemon.ErrNotReady: 503, errors.New("boom"): 500,
+	} {
+		b.logErr = err
+		if code, body, _ := get(t, srv.URL+"/logs/base"); code != want || !strings.Contains(body, "error") {
+			t.Errorf("%v: got %d %q want %d", err, code, body, want)
+		}
+	}
+	// read-only endpoint
+	if code, _ := post(t, srv.URL+"/logs/base", nil); code != 405 {
+		t.Errorf("POST /logs: %d", code)
+	}
+}
+
+func TestClientDisconnectEndsTheLogStream(t *testing.T) {
+	ended := make(chan struct{})
+	b := fixture()
+	b.logStream = endNotifier{fakeStream{lines: []string{"x"}, release: make(chan struct{})}, ended}
+	srv := serve(t, b)
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/logs/base?follow=1", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 8)
+	resp.Body.Read(buf)
+	cancel() // Ctrl-C in the client
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server must stop streaming when the client goes away")
+	}
+}
+
+type endNotifier struct {
+	fakeStream
+	ended chan struct{}
+}
+
+func (e endNotifier) Stream(ctx context.Context, w io.Writer, follow bool, tail int, flush func()) error {
+	err := e.fakeStream.Stream(ctx, w, follow, tail, flush)
+	close(e.ended)
+	return err
 }

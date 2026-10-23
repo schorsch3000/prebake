@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -885,5 +886,146 @@ func TestStatusShowsTheBuildInProgress(t *testing.T) {
 		if !j.RunningSince.IsZero() {
 			t.Errorf("nothing runs after the build: %+v", j)
 		}
+	}
+}
+
+// --- logs ---------------------------------------------------------------------------------
+
+func TestLogsFollowStreamsALiveBuild(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	started, release := make(chan struct{}), make(chan struct{})
+	h.b.onRun = func(j build.Job) {
+		if j.Container == "base" {
+			close(started)
+			<-release
+		}
+	}
+	tickDone := make(chan struct{})
+	go func() { h.d.Tick(context.Background()); close(tickDone) }()
+	<-started
+
+	ls, err := h.d.Logs("base", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got syncBuf
+	streamDone := make(chan error, 1)
+	go func() { streamDone <- ls.Stream(context.Background(), &got, true, 0, nil) }()
+	waitFor(t, "output of the running build", func() bool { return strings.Contains(got.String(), "building base") })
+	select {
+	case <-streamDone:
+		t.Fatal("the stream ended while the build is still running")
+	default:
+	}
+	close(release)
+	<-tickDone
+	select {
+	case err := <-streamDone:
+		if err != nil {
+			t.Errorf("stream: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream must end with the build")
+	}
+	if strings.Contains(got.String(), "building child") {
+		t.Errorf("only the followed job's output: %q", got.String())
+	}
+}
+
+func TestLogsFollowWaitsForAQueuedJob(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	started, release := make(chan struct{}), make(chan struct{})
+	h.b.onRun = func(j build.Job) {
+		if j.Container == "base" {
+			close(started)
+			<-release
+		}
+	}
+	tickDone := make(chan struct{})
+	go func() { h.d.Tick(context.Background()); close(tickDone) }()
+	<-started
+	// the child is queued behind its running parent
+	ls, err := h.d.Logs("child", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got syncBuf
+	streamDone := make(chan error, 1)
+	go func() { streamDone <- ls.Stream(context.Background(), &got, true, 0, nil) }()
+	waitFor(t, "the waiting notice", func() bool { return strings.Contains(got.String(), "waiting for child:default to start (queued)") })
+	close(release)
+	<-tickDone
+	select {
+	case <-streamDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream must end when the child's build ends")
+	}
+	if !strings.Contains(got.String(), "building child") || strings.Contains(got.String(), "did not start") {
+		t.Errorf("the child's build output follows the notice, even if the build was quick: %q", got.String())
+	}
+}
+
+func TestLogsOfAFinishedBuildAndOfAFreshProcess(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.d.Logs("base", "", false); !errors.Is(err, ErrNotReady) {
+		t.Errorf("no repo yet: %v", err)
+	}
+	h.sync()
+	if _, err := h.d.Logs("base", "", false); !errors.Is(err, ErrNoLogs) {
+		t.Errorf("nothing built yet: %v", err)
+	}
+	h.tick()
+	read := func(follow bool) string {
+		t.Helper()
+		ls, err := h.d.Logs("base", "", follow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var b bytes.Buffer
+		if err := ls.Stream(context.Background(), &b, follow, 0, nil); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+	if got := read(false); got != "building base\n" {
+		t.Errorf("last build: %q", got)
+	}
+	if got := read(true); got != "building base\n" {
+		t.Errorf("following an idle job shows the last output and returns: %q", got)
+	}
+	// a restarted daemon has no live log; the last recorded one comes from the state database
+	h.start()
+	h.sync()
+	if got := read(false); got != "building base\n" {
+		t.Errorf("after a restart: %q", got)
+	}
+	// errors
+	if _, err := h.d.Logs("nope", "", false); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown container: %v", err)
+	}
+	if _, err := h.d.Logs("base", "cuda", true); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown flavor: %v", err)
+	}
+}
+
+func TestLogsFollowOfAParkedJobExplains(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	h.b.fail["base"] = 2
+	h.tick()
+	h.clk.advance(16 * time.Minute)
+	h.tick() // parked
+	ls, err := h.d.Logs("base", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b bytes.Buffer
+	if err := ls.Stream(context.Background(), &b, true, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "building base") {
+		t.Errorf("the failed build's output is still available: %q", b.String())
 	}
 }

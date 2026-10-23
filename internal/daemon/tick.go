@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -277,14 +278,17 @@ func (d *Daemon) runJob(ctx context.Context, repo *config.Repo, job schedule.Job
 	log.Info("build starting")
 	var out tailBuffer
 	out.max = state.MaxLogBytes
+	live := newLiveLog() // `prebake logs -f` follows this while the build runs
 	started := d.now()
 	d.mu.Lock()
 	d.running[k] = started
+	d.logs[k] = live
 	d.mu.Unlock()
 	res, err := d.builder.Run(ctx, build.Job{
 		Container: k.Container, Flavor: k.Flavor, Kind: job.Kind,
 		ContextDir: repo.ContainerDir(k.Container), Config: c,
-	}, &out)
+	}, io.MultiWriter(&out, live))
+	live.Close()
 	finished := d.now()
 	d.mu.Lock()
 	delete(d.running, k)
@@ -446,4 +450,118 @@ func (d *Daemon) Status() Status {
 	}
 	sort.Slice(st.Jobs, func(i, j int) bool { return st.Jobs[i].Key.String() < st.Jobs[j].Key.String() })
 	return st
+}
+
+// ErrNoLogs means there is no build output for the job yet.
+var ErrNoLogs = errors.New("no build output yet")
+
+// Logs returns the build output of a container flavor: the build in progress, else the last
+// one this process ran, else the last one recorded in the state database.
+//
+// With follow, a job that is queued or waiting for a retry is waited for: the returned stream
+// starts when its build starts and ends with it. (`prebake trigger x && prebake logs -f x`
+// must not race the scheduler.) Without a queued job, a followed stream shows the last output
+// and ends.
+func (d *Daemon) Logs(container, flavor string, follow bool) (LogStream, error) {
+	d.mu.Lock()
+	repo := d.repo
+	d.mu.Unlock()
+	if repo == nil {
+		return nil, ErrNotReady
+	}
+	c, ok := repo.Containers[container]
+	if !ok {
+		return nil, fmt.Errorf("%w: unknown container %q", ErrNotFound, container)
+	}
+	if flavor == "" {
+		flavor = config.DefaultFlavor
+	}
+	known := false
+	for _, f := range c.FlavorNames() {
+		known = known || f == flavor
+	}
+	if !known {
+		return nil, fmt.Errorf("%w: container %q has no flavor %q", ErrNotFound, container, flavor)
+	}
+	k := schedule.Key{Container: container, Flavor: flavor}
+	if follow {
+		return &followLog{d: d, key: k}, nil
+	}
+	return d.currentLog(k)
+}
+
+// currentLog is the best log available for k right now.
+func (d *Daemon) currentLog(k schedule.Key) (LogStream, error) {
+	d.mu.Lock()
+	live := d.logs[k]
+	d.mu.Unlock()
+	if live != nil {
+		return live, nil
+	}
+	if d.store != nil {
+		if hist, err := d.store.History(k.Container, k.Flavor, 1); err == nil && len(hist) > 0 && hist[0].Log != "" {
+			return storedLog{hist[0].Log}, nil
+		}
+	}
+	return nil, ErrNoLogs
+}
+
+// followLog implements the waiting behaviour of Logs(follow=true).
+type followLog struct {
+	d   *Daemon
+	key schedule.Key
+}
+
+const followPoll = 300 * time.Millisecond
+
+func (f *followLog) Stream(ctx context.Context, w io.Writer, _ bool, tail int, flush func()) error {
+	say := func(msg string) {
+		io.WriteString(w, msg+"\n")
+		if flush != nil {
+			flush()
+		}
+	}
+	f.d.mu.Lock()
+	before := f.d.logs[f.key] // the log that existed when the client asked
+	f.d.mu.Unlock()
+	waited := false
+	for {
+		f.d.mu.Lock()
+		_, building := f.d.running[f.key]
+		cur := f.d.logs[f.key]
+		f.d.mu.Unlock()
+		switch {
+		case building && cur != nil:
+			return cur.Stream(ctx, w, true, tail, flush)
+		case cur != nil && cur != before:
+			// a build started and ended while we looked away (builds can be short)
+			return cur.Stream(ctx, w, true, tail, flush)
+		}
+		st, _ := f.d.queue.StatusOf(f.key)
+		// Building without an entry in running is the instant between the queue handing the job
+		// out and the runner registering it: wait for it as well
+		if st == schedule.Queued || st == schedule.Retrying || st == schedule.Building {
+			if !waited {
+				waited = true
+				say("-- waiting for " + f.key.String() + " to start (" + st.String() + ") --")
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(followPoll):
+			}
+			continue
+		}
+		if waited { // it was queued, and then it did not run (parked, skipped, ...)
+			say("-- " + f.key.String() + " did not start: " + st.String() + " --")
+		}
+		last, err := f.d.currentLog(f.key)
+		if err != nil {
+			if waited {
+				return nil
+			}
+			return err
+		}
+		return last.Stream(ctx, w, false, tail, flush)
+	}
 }

@@ -42,6 +42,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdDaemon(args[1:], stdout, stderr)
 	case "status":
 		return cmdStatus(args[1:], stdout, stderr)
+	case "logs":
+		return cmdLogs(args[1:], stdout, stderr)
 	case "dry-run":
 		return cmdDryRun(args[1:], stdout, stderr)
 	case "trigger":

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"regexp"
@@ -50,7 +52,7 @@ func TestCommandTableFlagsExist(t *testing.T) {
 	tmp := t.TempDir() // never a git repo: commands that would act on a repo fail instead
 	safe := map[string][]string{
 		"status": {"--url", "http://127.0.0.1:1"}, "dry-run": {"--url", "http://127.0.0.1:1"},
-		"trigger": {"--url", "http://127.0.0.1:1", "x"}, "gc": {"--url", "http://127.0.0.1:1"},
+		"trigger": {"--url", "http://127.0.0.1:1", "x"}, "logs": {"--url", "http://127.0.0.1:1", "x"}, "gc": {"--url", "http://127.0.0.1:1"},
 		"validate": {"--repo", tmp}, "install-hook": {"--repo", tmp}, "show-key": {"--data-dir", tmp},
 	}
 	for _, c := range commands {
@@ -67,10 +69,12 @@ func TestCommandTableFlagsExist(t *testing.T) {
 					args = append([]string{c.Name, d, f.enum()[0]}, base...)
 				case f.Name == "interval":
 					args = append([]string{c.Name, d, "1s"}, base...)
+				case f.Name == "tail":
+					args = append([]string{c.Name, d, "5"}, base...)
 				default:
 					args = append([]string{c.Name, d, "x"}, base...)
 				}
-				if c.Name == "status" && (f.Name == "watch" || f.Short == "w") {
+				if c.Name == "status" && (f.Name == "watch" || f.Short == "w") || c.Name == "logs" && f.Name == "tail" {
 					continue // would wait for a terminal; covered by its own test
 				}
 				_, _, errOut := runCLI(t, args...)
@@ -397,5 +401,76 @@ func TestZshAndFishScriptsAreWellFormed(t *testing.T) {
 		if out, err := exec.Command("fish", "--no-execute", f).CombinedOutput(); err != nil {
 			t.Errorf("fish --no-execute: %v\n%s", err, out)
 		}
+	}
+}
+
+// --- logs -------------------------------------------------------------------------------------
+
+func logsServer(t *testing.T) (*httptest.Server, *[]string, chan struct{}) {
+	var reqs []string
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs = append(reqs, r.URL.RequestURI())
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/logs/nope"):
+			w.WriteHeader(404)
+			w.Write([]byte(`{"error":"not found: unknown container"}`))
+		case r.URL.Query().Get("follow") == "1":
+			w.WriteHeader(200)
+			w.Write([]byte("#1 building\n"))
+			w.(http.Flusher).Flush()
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			w.Write([]byte("#2 done\n"))
+		default:
+			w.WriteHeader(200)
+			w.Write([]byte("#1 old output\n"))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &reqs, release
+}
+
+func TestLogsCommand(t *testing.T) {
+	srv, reqs, release := logsServer(t)
+	close(release)
+	code, out, e := runCLI(t, "logs", "dev", "--url", srv.URL)
+	if code != 0 || out != "#1 old output\n" {
+		t.Fatalf("%d %q %q", code, out, e)
+	}
+	// flags after the argument, container:flavor, --tail, -f
+	code, out, e = runCLI(t, "logs", "dev:gpu", "-f", "--tail", "50", "--url", srv.URL)
+	if code != 0 || out != "#1 building\n#2 done\n" {
+		t.Fatalf("follow: %d %q %q", code, out, e)
+	}
+	want := []string{"/logs/dev?tail=0", "/logs/dev/gpu?tail=50&follow=1"}
+	if strings.Join(*reqs, " ") != strings.Join(want, " ") {
+		t.Errorf("requests = %v", *reqs)
+	}
+	if code, _, e := runCLI(t, "logs", "nope", "--url", srv.URL); code != 1 || !strings.Contains(e, "404") || !strings.Contains(e, "unknown container") {
+		t.Errorf("unknown container: %d %q", code, e)
+	}
+	for _, args := range [][]string{{"logs"}, {"logs", "a", "b"}, {"logs", "a", "--tail", "-1"}} {
+		if code, _, _ := runCLI(t, append(args, "--url", srv.URL)...); code != 2 {
+			t.Errorf("%v: want exit 2, got %d", args, code)
+		}
+	}
+	if code, _, e := runCLI(t, "logs", "dev", "--url", "http://127.0.0.1:1"); code != 2 || e == "" {
+		t.Errorf("unreachable: %d %q", code, e)
+	}
+}
+
+func TestLogsFollowEndsOnCtrlC(t *testing.T) {
+	srv, _, _ := logsServer(t) // the stream never ends by itself
+	ctx, cancel := context.WithCancel(context.Background())
+	oldCtx := watchContext
+	watchContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
+	defer func() { watchContext = oldCtx }()
+	go func() { time.Sleep(200 * time.Millisecond); cancel() }()
+	code, out, e := runCLI(t, "logs", "dev", "-f", "--url", srv.URL)
+	if code != 0 || out != "#1 building\n" {
+		t.Errorf("Ctrl-C ends a followed stream quietly: %d %q %q", code, out, e)
 	}
 }

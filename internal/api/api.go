@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/schorsch3000/prebake/internal/daemon"
@@ -21,6 +22,8 @@ type Backend interface {
 	Status() daemon.Status
 	Trigger(container, flavor string, kind schedule.Kind) (alsoQueued []string, err error)
 	RequestGC()
+	// Logs returns the build output of a container flavor (see daemon.Daemon.Logs).
+	Logs(container, flavor string, follow bool) (daemon.LogStream, error)
 }
 
 // KeyInfo is the SSH deploy key shown at /pubkey.
@@ -104,6 +107,8 @@ func Handler(b Backend, key KeyInfo, now func() time.Time) http.Handler {
 	mux.HandleFunc("POST /trigger/{container}", s.trigger)
 	mux.HandleFunc("POST /trigger/{container}/{flavor}", s.trigger)
 	mux.HandleFunc("POST /gc", s.gc)
+	mux.HandleFunc("GET /logs/{container}", s.logs)
+	mux.HandleFunc("GET /logs/{container}/{flavor}", s.logs)
 	return sameOrigin(mux)
 }
 
@@ -185,6 +190,47 @@ func flavorOrDefault(f string) string {
 		return "default"
 	}
 	return f
+}
+
+// logs streams the build output of a container flavor: GET /logs/<container>[/<flavor>]
+// with ?follow=1 to follow a running build and ?tail=N for the last N lines only.
+func (s *server) logs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	follow := q.Get("follow") == "1" || q.Get("follow") == "true"
+	tail := 0
+	if t := q.Get("tail"); t != "" {
+		n, err := strconv.Atoi(t)
+		if err != nil || n < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("tail %q: want a non-negative number", t)})
+			return
+		}
+		tail = n
+	}
+	ls, err := s.b.Logs(r.PathValue("container"), r.PathValue("flavor"), follow)
+	if err != nil {
+		code := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, daemon.ErrNotFound), errors.Is(err, daemon.ErrNoLogs):
+			code = http.StatusNotFound
+		case errors.Is(err, daemon.ErrNotReady):
+			code = http.StatusServiceUnavailable
+		}
+		writeJSON(w, code, map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, _ := w.(http.Flusher)
+	flush := func() {
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+	flush()
+	// once the header is out an error cannot change the status; the client sees the stream end
+	_ = ls.Stream(r.Context(), w, follow, tail, flush)
 }
 
 func (s *server) gc(w http.ResponseWriter, r *http.Request) {

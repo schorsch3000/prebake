@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -307,6 +308,63 @@ func cmdTrigger(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintln(stdout, body)
+	return 0
+}
+
+func cmdLogs(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: prebake logs <container>[:<flavor>] [-f] [--tail N] [--url URL]")
+	}
+	url := clientFlags(fs)
+	var follow bool
+	fs.BoolVar(&follow, "follow", false, "follow a running build until it ends; waits for a queued one to start")
+	fs.BoolVar(&follow, "f", false, "same as --follow")
+	tail := fs.Int("tail", 0, "only the last N lines")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if len(pos) != 1 || *tail < 0 {
+		fs.Usage()
+		return 2
+	}
+	container, flavor, _ := strings.Cut(pos[0], ":")
+	path := "/logs/" + container
+	if flavor != "" {
+		path += "/" + flavor
+	}
+	query := "?tail=" + strconv.Itoa(*tail)
+	if follow {
+		query += "&follow=1"
+	}
+	ctx, cancel := watchContext() // Ctrl-C ends a followed stream
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(*url, "/")+path+query, nil)
+	if err != nil {
+		fmt.Fprintln(stderr, "prebake logs:", err)
+		return 2
+	}
+	// no client timeout: a followed build can run for a long time
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		fmt.Fprintln(stderr, "prebake logs:", err)
+		return 2
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		fmt.Fprintf(stderr, "prebake logs: %d %s\n", resp.StatusCode, strings.TrimSpace(string(b)))
+		return 1
+	}
+	if _, err := io.Copy(stdout, resp.Body); err != nil && ctx.Err() == nil {
+		fmt.Fprintln(stderr, "prebake logs: connection lost:", err)
+		return 1
+	}
 	return 0
 }
 

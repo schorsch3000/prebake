@@ -299,6 +299,10 @@ Status listener (default `:8080`, read-only except trigger, no auth):
 - `GET /` HTML overview, `GET /status` JSON (per container/flavor: last
   rebuild/refresh, next due, state: ok / queued / building / retrying / parked /
   skipped / degraded, digest, last error).
+- `GET /logs/<container>[/<flavor>]?follow=1&tail=N`: build output as a streamed text
+  response. The running build is kept in memory (last 512 KiB), the last finished one
+  also; after a restart the last recorded log of the state database is served. With
+  `follow`, a queued job is waited for and the stream ends with its build.
 - `GET /pubkey`.
 - `POST /trigger/<container>[/<flavor>]?kind=rebuild|refresh` queues a job now
   and unparks it.
