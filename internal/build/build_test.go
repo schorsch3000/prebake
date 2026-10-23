@@ -22,6 +22,9 @@ type fake struct {
 	remote map[string]bool // refs pullable
 	failOn map[string]error
 	runOut map[string]string
+
+	buildOutput string // written to the build log before a failing build returns
+	pushOutput  string // same for a failing push
 }
 
 func newFake() *fake {
@@ -33,8 +36,11 @@ func (f *fake) rec(op string, a ...string) error {
 	return f.failOn[op]
 }
 
-func (f *fake) Build(_ context.Context, s Spec, _ io.Writer) error {
+func (f *fake) Build(_ context.Context, s Spec, log io.Writer) error {
 	f.specs = append(f.specs, s)
+	if f.failOn["build"] != nil && f.buildOutput != "" {
+		io.WriteString(log, f.buildOutput)
+	}
 	if err := f.rec("build", s.Tag); err != nil {
 		return err
 	}
@@ -55,7 +61,10 @@ func (f *fake) Tag(_ context.Context, src, dst string) error {
 	f.local[dst] = true
 	return nil
 }
-func (f *fake) Push(_ context.Context, ref string, _ io.Writer) error {
+func (f *fake) Push(_ context.Context, ref string, log io.Writer) error {
+	if f.failOn["push:"+ref] != nil && f.pushOutput != "" {
+		io.WriteString(log, f.pushOutput)
+	}
 	if err := f.rec("push", ref); err != nil {
 		return err
 	}
@@ -360,5 +369,36 @@ func TestCLIOthers(t *testing.T) {
 	c, _ = cli("daemon not running", fmt.Errorf("exit 1"))
 	if _, err := c.Exists(ctx, "x"); err == nil {
 		t.Error("other failures must surface")
+	}
+}
+
+func TestFailuresCarryTheDockerOutput(t *testing.T) {
+	f := newFake()
+	f.failOn["build"] = errors.New("exit status 1")
+	f.buildOutput = "noise\n\nCannot connect to the Docker daemon at tcp://docker-proxy:2375. Is the docker daemon running?\n"
+	_, err := runner(f).Run(context.Background(), job(schedule.Rebuild, &config.Container{}), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "exit status 1") || !strings.Contains(err.Error(), "Cannot connect to the Docker daemon") {
+		t.Fatalf("the reason for a failed build must be in the error: %v", err)
+	}
+
+	f = newFake()
+	f.failOn["push:localhost:5001/dev:default-20261022-020000"] = errors.New("exit status 1")
+	f.pushOutput = "denied: requested access to the resource is denied\n"
+	_, err = runner(f).Run(context.Background(), job(schedule.Rebuild, &config.Container{}), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "denied: requested access") {
+		t.Fatalf("push errors carry the output too: %v", err)
+	}
+
+	// the excerpt is bounded to the last lines
+	var long strings.Builder
+	for i := 0; i < 100; i++ {
+		fmt.Fprintf(&long, "line %d\n", i)
+	}
+	f = newFake()
+	f.failOn["build"] = errors.New("exit status 1")
+	f.buildOutput = long.String()
+	_, err = runner(f).Run(context.Background(), job(schedule.Rebuild, &config.Container{}), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "line 99") || strings.Contains(err.Error(), "line 50\n") || strings.Count(err.Error(), "\n") > 16 {
+		t.Errorf("excerpt not bounded: %v", err)
 	}
 }

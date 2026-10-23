@@ -91,6 +91,17 @@ func (r *Runner) now() time.Time {
 // Run builds, tests, pushes and promotes. A failed build or test never
 // touches the moving alias tag. Build output is written to log.
 func (r *Runner) Run(ctx context.Context, job Job, log io.Writer) (*Result, error) {
+	// Docker's own error is just "exit status 1"; the reason is in its output. Keep the
+	// tail so that the returned error (and thereby the daemon log and notifications)
+	// says why a build or push failed.
+	tail := &tailWriter{max: 8192}
+	log = io.MultiWriter(log, tail)
+	withOutput := func(op string, err error) error {
+		if ex := tail.excerpt(15); ex != "" {
+			return fmt.Errorf("%s: %w\n%s", op, err, ex)
+		}
+		return fmt.Errorf("%s: %w", op, err)
+	}
 	started := r.now()
 	stamp := started.UTC().Format("20060102-150405")
 	flavor := job.Flavor
@@ -137,7 +148,7 @@ func (r *Runner) Run(ctx context.Context, job Job, log io.Writer) (*Result, erro
 			Pull:       true,
 		}
 		if err := r.Docker.Build(ctx, spec, log); err != nil {
-			return nil, fmt.Errorf("build: %w", err)
+			return nil, withOutput("build", err)
 		}
 	case schedule.Refresh:
 		empty, err := os.MkdirTemp("", "prebake-refresh-")
@@ -152,7 +163,7 @@ func (r *Runner) Run(ctx context.Context, job Job, log io.Writer) (*Result, erro
 			NoCache:    true, // the point of a refresh is to see new upstream packages
 		}
 		if err := r.Docker.Build(ctx, spec, log); err != nil {
-			return nil, fmt.Errorf("refresh: %w", err)
+			return nil, withOutput("refresh", err)
 		}
 	default:
 		return nil, fmt.Errorf("cannot run job of kind %v", kind)
@@ -172,13 +183,13 @@ func (r *Runner) Run(ctx context.Context, job Job, log io.Writer) (*Result, erro
 		return nil, err
 	}
 	if err := r.Docker.Push(ctx, dateRef, log); err != nil {
-		return nil, fmt.Errorf("push %s: %w", dateRef, err)
+		return nil, withOutput("push "+dateRef, err)
 	}
 	if err := r.Docker.Tag(ctx, candidate, aliasRef); err != nil {
 		return nil, err
 	}
 	if err := r.Docker.Push(ctx, aliasRef, log); err != nil {
-		return nil, fmt.Errorf("push %s: %w", aliasRef, err)
+		return nil, withOutput("push "+aliasRef, err)
 	}
 	digest, err := r.Docker.Digest(ctx, dateRef)
 	if err != nil {
@@ -206,4 +217,32 @@ func (r *Runner) havePrevious(ctx context.Context, ref string, log io.Writer) (b
 // image plus the configured refresh command.
 func RefreshDockerfile(previous, refreshCmd string) string {
 	return "FROM " + previous + "\nRUN " + strings.TrimSpace(refreshCmd) + "\n"
+}
+
+// tailWriter keeps the last max bytes written to it.
+type tailWriter struct {
+	max int
+	buf []byte
+}
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > 2*t.max {
+		t.buf = append([]byte(nil), t.buf[len(t.buf)-t.max:]...)
+	}
+	return len(p), nil
+}
+
+// excerpt returns the last n non-empty lines.
+func (t *tailWriter) excerpt(n int) string {
+	var lines []string
+	for _, l := range strings.Split(strings.ReplaceAll(string(t.buf), "\r", "\n"), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

@@ -26,6 +26,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - docker-api
+    healthcheck:
+      # /_ping is allowed by default; the daemon must not start before the proxy listens
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2375/_ping || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
   prebake:
     environment:
@@ -37,7 +43,8 @@ services:
       - default
       - docker-api
     depends_on:
-      - docker-proxy
+      docker-proxy:
+        condition: service_healthy
 
 networks:
   docker-api:

@@ -16,7 +16,16 @@ if [ "${PREBAKE_PROXY:-}" = 1 ]; then compose+=(-f docker-compose.proxy.yaml); f
 compose+=(-f docker-compose.ci.yaml)
 status=http://localhost:8080/status
 
-dump_logs() { "${compose[@]}" logs --no-color prebake | tail -n 150 || true; }
+dump_logs() {
+  "${compose[@]}" logs --no-color prebake | tail -n 150 || true
+  if [ "${PREBAKE_PROXY:-}" = 1 ]; then
+    echo "--- docker-proxy logs (one line per request, with HTTP status) ---"
+    "${compose[@]}" logs --no-color docker-proxy | tail -n 80 || true
+    echo "--- docker as seen by the daemon container ---"
+    # shellcheck disable=SC2016 # expanded by the shell inside the container, not here
+    "${compose[@]}" exec -T prebake sh -c 'echo DOCKER_HOST=$DOCKER_HOST; docker version 2>&1 | head -20; echo "-- trivial build:"; echo "FROM scratch" | docker buildx build --progress=plain -f - /tmp >/tmp/diag.out 2>&1; echo "exit=$?"; tail -20 /tmp/diag.out' || true
+  fi
+}
 cleanup() {
   local rc=$?
   if [ "$rc" -ne 0 ]; then
