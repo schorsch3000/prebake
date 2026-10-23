@@ -20,6 +20,7 @@ RUN apt-get update \
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=dockercli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 COPY --from=build /out/prebake /usr/local/bin/prebake
+COPY LICENSE /usr/share/doc/prebake/LICENSE
 ENV DATA_DIR=/data
 VOLUME /data
 EXPOSE 5000 5001 8080
@@ -34,5 +35,6 @@ ENV PREBAKE_VERSION=${VERSION} PREBAKE_REVISION=${REVISION}
 LABEL org.opencontainers.image.title="prebake" \
       org.opencontainers.image.description="Keeps base images for dev containers built and fresh, served from a read-only registry" \
       org.opencontainers.image.source="https://github.com/schorsch3000/prebake" \
+      org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}"

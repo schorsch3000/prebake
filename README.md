@@ -349,3 +349,11 @@ compose end-to-end script in both modes. The Go build caches and the image layer
 runs (`.github/actions/go-cache`, the Docker layer cache), and the image is built once and reused by the
 end-to-end jobs and the publish step. Work is
 tracked with [git-bug](https://github.com/git-bug/git-bug) in the repo.
+
+## License
+
+prebake is licensed under the [Apache License 2.0](LICENSE). The release archives and the container
+image contain the license text; the image also carries it as `org.opencontainers.image.licenses`.
+The libraries it is built from have their own licenses (for example the Docker `distribution`
+registry is Apache-2.0, `golang.org/x/crypto` and the pure-Go SQLite driver are BSD-3-Clause); the
+container image additionally contains Debian packages, the Docker CLI and git.

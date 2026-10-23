@@ -72,6 +72,8 @@ jobs:
           tar -xzOf "$RUNNER_TEMP"/dist/prebake_0.0.0-ci_linux_amd64.tar.gz prebake_0.0.0-ci_linux_amd64/prebake > "$RUNNER_TEMP/prebake"
           chmod +x "$RUNNER_TEMP/prebake"
           "$RUNNER_TEMP/prebake" version | grep -q '^prebake 0.0.0-ci '
+          for a in "$RUNNER_TEMP"/dist/*.tar.gz; do tar -tzf "$a" | grep -q '/LICENSE$' || { echo "no LICENSE in $a"; exit 1; }; done
+          unzip -l "$RUNNER_TEMP"/dist/*.zip | grep -q '/LICENSE$'
 
   integration:
     name: docker integration tests

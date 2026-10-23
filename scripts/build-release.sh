@@ -30,8 +30,8 @@ build_one() {
   CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
     -ldflags "-s -w -X main.version=$version -X main.revision=$revision" \
     -o "$stage/$name/$bin" ./cmd/prebake
-  cp README.md "$stage/$name/README.md"
-  touch -d "@$epoch" "$stage/$name/$bin" "$stage/$name/README.md" "$stage/$name"
+  cp README.md LICENSE "$stage/$name/"
+  touch -d "@$epoch" "$stage/$name/$bin" "$stage/$name/README.md" "$stage/$name/LICENSE" "$stage/$name"
   if [ "$os" = windows ]; then
     (cd "$stage" && zip -q -X -r "$out/$name.zip" "$name")
   else
