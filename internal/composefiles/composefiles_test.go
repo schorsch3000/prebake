@@ -78,6 +78,38 @@ func TestSocketMountOnlyInDirectFile(t *testing.T) {
 	}
 }
 
+// Published ports are configurable through .env, and REGISTRY_HOST (where the host's Docker
+// daemon pushes) must follow the published write port, or changing the port breaks every push.
+func TestPortsAreConfigurable(t *testing.T) {
+	for _, f := range []string{"../../docker-compose.yaml", "../../docker-compose.proxy.yaml"} {
+		svc := dig(t, load(t, f), "services", "prebake")
+		var ports []string
+		for _, p := range svc["ports"].([]any) {
+			ports = append(ports, p.(string))
+		}
+		want := map[string]string{"5000": "PREBAKE_READ_PORT", "5001": "PREBAKE_WRITE_PORT", "8080": "PREBAKE_STATUS_PORT"}
+		for container, v := range want {
+			found := false
+			for _, p := range ports {
+				if strings.Contains(p, "${"+v+":-"+container+"}:"+container) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s: container port %s must be published through ${%s:-%s}: %v", f, container, v, container, ports)
+			}
+		}
+		for _, p := range ports {
+			if strings.Contains(p, ":5001") && !strings.HasPrefix(p, "127.0.0.1:") {
+				t.Errorf("%s: the write port must be published on 127.0.0.1 only: %s", f, p)
+			}
+		}
+		if got := dig(t, svc, "environment")["REGISTRY_HOST"]; got != "localhost:${PREBAKE_WRITE_PORT:-5001}" {
+			t.Errorf("%s: REGISTRY_HOST must follow the write port, got %v", f, got)
+		}
+	}
+}
+
 // The two deployment files use the published image and never build; building is the job of
 // docker-compose.build.yaml, so `docker compose up` cannot silently build a stale local image.
 func TestPublishedImageAndBuildOverride(t *testing.T) {

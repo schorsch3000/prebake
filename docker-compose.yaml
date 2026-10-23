@@ -15,13 +15,15 @@ services:
       TZ:                      # build slots use this zone; unset = the host's zone (see /etc/localtime below)
       PUSHOVER_TOKEN: ${PUSHOVER_TOKEN:-}
       PUSHOVER_USER: ${PUSHOVER_USER:-}
+      # Where the host's Docker daemon pushes: the published write port below. Must stay in step with it.
+      REGISTRY_HOST: localhost:${PREBAKE_WRITE_PORT:-5001}
       # TLS for the read-only registry listener: mount the files below and set both.
       TLS_CERT: ${TLS_CERT:-}
       TLS_KEY: ${TLS_KEY:-}
     ports:
-      - "5000:5000"            # registry, read-only, for everybody
-      - "127.0.0.1:5001:5001"  # registry, write: loopback ONLY, the host dockerd pushes here
-      - "8080:8080"            # status page and control API (no authentication)
+      - "${PREBAKE_READ_PORT:-5000}:5000"            # registry, read-only, for everybody
+      - "127.0.0.1:${PREBAKE_WRITE_PORT:-5001}:5001"  # registry, write: loopback ONLY, the host dockerd pushes here
+      - "${PREBAKE_STATUS_PORT:-8080}:8080"            # status page and control API (no authentication)
     volumes:
       - prebake-data:/data
       # Root-equivalent on the host. See README.md, "Security".

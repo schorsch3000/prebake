@@ -23,7 +23,11 @@ else
 fi
 # the image under test is always built from this checkout, never the published one
 compose+=(-f docker-compose.build.yaml -f docker-compose.ci.yaml)
-status=http://localhost:8080/status
+# Non-default published ports on purpose: proves that changing them in .env is enough (the
+# write port in particular, which the host's Docker daemon pushes to via REGISTRY_HOST).
+export PREBAKE_READ_PORT=6100 PREBAKE_WRITE_PORT=6101 PREBAKE_STATUS_PORT=6102
+read_port=$PREBAKE_READ_PORT write_port=$PREBAKE_WRITE_PORT status_port=$PREBAKE_STATUS_PORT
+status=http://localhost:$status_port/status
 
 dump_logs() {
   "${compose[@]}" logs --no-color prebake | tail -n 150 || true
@@ -89,19 +93,19 @@ test "$("${compose[@]}" exec -T prebake date +%z)" = +0900
 wait_for 300 "ci-demo to be built" job_built ci-demo
 
 echo "== registry: read-only side serves, refuses writes"
-curl -fsS http://localhost:5000/v2/ci-demo/tags/list | jq -e '.tags | index("latest")' >/dev/null
-test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:5000/v2/x/blobs/uploads/)" = 405
-test "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE http://localhost:5000/v2/ci-demo/manifests/latest)" = 405
+curl -fsS http://localhost:$read_port/v2/ci-demo/tags/list | jq -e '.tags | index("latest")' >/dev/null
+test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$read_port/v2/x/blobs/uploads/)" = 405
+test "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE http://localhost:$read_port/v2/ci-demo/manifests/latest)" = 405
 
 echo "== the built image can be pulled and run through the read-only listener"
-docker image rm -f localhost:5001/ci-demo:latest >/dev/null 2>&1 || true
-docker pull -q localhost:5000/ci-demo:latest
-test "$(docker run --rm localhost:5000/ci-demo:latest cat /base)" = base
+docker image rm -f localhost:$write_port/ci-demo:latest >/dev/null 2>&1 || true
+docker pull -q localhost:$read_port/ci-demo:latest
+test "$(docker run --rm localhost:$read_port/ci-demo:latest cat /base)" = base
 
 echo "== CLI inside the container"
 "${compose[@]}" exec -T prebake prebake status
 "${compose[@]}" exec -T prebake prebake dry-run
-curl -fsS http://localhost:8080/pubkey | grep -q '^ssh-ed25519 '
+curl -fsS http://localhost:$status_port/pubkey | grep -q '^ssh-ed25519 '
 
 if [ "${PREBAKE_PROXY:-}" = 1 ]; then
   echo "== behind the socket proxy: images work, containers are out of reach"
@@ -129,8 +133,8 @@ git -C "$work/w" add -A
 git -C "$work/w" commit -q -m "ci-child"
 git -C "$work/w" push -q origin HEAD:main
 wait_for 300 "ci-child to be built" job_built ci-child
-docker pull -q localhost:5000/ci-child:latest
-test "$(docker run --rm localhost:5000/ci-child:latest cat /child)" = child
+docker pull -q localhost:$read_port/ci-child:latest
+test "$(docker run --rm localhost:$read_port/ci-child:latest cat /child)" = child
 
 echo "== an invalid push is rejected and the last good commit stays active"
 active=$(curl -fsS "$status" | jq -r .repo.active)
@@ -142,8 +146,8 @@ wait_for 60 "repo to turn degraded" bash -c "curl -fsS '$status' | jq -e '.repo.
 test "$(curl -fsS "$status" | jq -r .repo.active)" = "$active"
 
 echo "== manual trigger and GC are accepted"
-test "$(curl -s -o /dev/null -w '%{http_code}' -X POST 'http://localhost:8080/trigger/ci-demo?kind=refresh')" = 202
-test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/gc)" = 202
-test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/trigger/nope)" = 404
+test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$status_port/trigger/ci-demo?kind=refresh")" = 202
+test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$status_port/gc)" = 202
+test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$status_port/trigger/nope)" = 404
 
 echo "e2e ok"

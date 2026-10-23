@@ -50,11 +50,14 @@ docker compose exec prebake prebake status      # what is built, what is parked
 docker compose exec prebake prebake dry-run     # what is due when
 ```
 
-The status page is on <http://localhost:8080>.
+The status page is on <http://localhost:8080> (or the port you set, see below).
 
 Ports: `5000` read-only registry (everyone), `127.0.0.1:5001` write listener
 (only the host's Docker daemon, never publish it without the `127.0.0.1:`),
-`8080` status page and control API.
+`8080` status page and control API. If those are taken, set `PREBAKE_READ_PORT`,
+`PREBAKE_WRITE_PORT` and `PREBAKE_STATUS_PORT` in `.env`; that is all, the daemon
+is told where the Docker host pushes (`REGISTRY_HOST`) automatically. For the CLI on
+the host use `PREBAKE_URL=http://127.0.0.1:<status port>`.
 
 ## The config repo
 
