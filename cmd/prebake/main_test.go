@@ -365,3 +365,45 @@ func TestVersionCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateStagedHintsAtUntrackedFiles(t *testing.T) {
+	root := goodRepo(t)
+	write(t, root, "containers/dev/Dockerfile", "FROM debian\nCOPY init /init\nCOPY packages.apt /p\n")
+	write(t, root, "containers/dev/init", "#!/bin/sh\n")
+	write(t, root, "containers/dev/packages.apt", "git\n")
+	gitT(t, root, "add", "prebake.yaml", "containers/dev/Dockerfile", "containers/dev/container.yaml") // not the two new files
+
+	var o, e bytes.Buffer
+	code := run([]string{"validate", "--repo", root, "--staged"}, &o, &e)
+	if code != 1 || !strings.Contains(o.String(), `COPY source "init" does not exist`) {
+		t.Fatalf("the index lacks the new files: %d %q", code, o.String())
+	}
+	if !strings.Contains(e.String(), "untracked") || !strings.Contains(e.String(), "containers/dev/init") ||
+		!strings.Contains(e.String(), "containers/dev/packages.apt") || !strings.Contains(e.String(), "git commit -a") {
+		t.Errorf("the hint must name the untracked files and the git commit -a pitfall:\n%s", e.String())
+	}
+
+	// staged: passes, and no hint is printed
+	gitT(t, root, "add", "containers/dev")
+	o.Reset()
+	e.Reset()
+	if code := run([]string{"validate", "--repo", root, "--staged"}, &o, &e); code != 0 || e.String() != "" {
+		t.Errorf("after git add: %d %q %q", code, o.String(), e.String())
+	}
+
+	// the hint is only for --staged; a real error without untracked files gets none
+	write(t, root, "containers/dev/container.yaml", "refrsh: x\n")
+	gitT(t, root, "add", "-A")
+	o.Reset()
+	e.Reset()
+	if code := run([]string{"validate", "--repo", root, "--staged"}, &o, &e); code != 1 || strings.Contains(e.String(), "hint:") {
+		t.Errorf("no untracked files, no hint: %d %q", code, e.String())
+	}
+	// worktree mode never prints it
+	e.Reset()
+	write(t, root, "untracked.txt", "x")
+	run([]string{"validate", "--repo", root}, &o, &e)
+	if strings.Contains(e.String(), "hint:") {
+		t.Errorf("worktree mode: %q", e.String())
+	}
+}

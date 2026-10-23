@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/schorsch3000/prebake/internal/gitsync"
 	"github.com/schorsch3000/prebake/internal/validate"
@@ -90,11 +91,47 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 		for _, i := range res.Issues {
 			fmt.Fprintln(stdout, i)
 		}
+		if *staged && res.Errors() > 0 {
+			if hint := untrackedHint(*repo); hint != "" {
+				fmt.Fprintln(stderr, hint)
+			}
+		}
 	}
 	if res.Errors() > 0 || (*strict && res.Warnings() > 0) {
 		return 1
 	}
 	return 0
+}
+
+// untrackedHint explains the most common reason for a failing `validate --staged`: files that
+// exist on disk but are not in the index. `git commit -a` only adds files that are already tracked,
+// and the staged tree (what the commit will contain) is what is validated, so a new file that
+// was never `git add`ed is "missing" even though it is right there.
+func untrackedHint(repo string) string {
+	out, err := gitsync.Git(repo, "ls-files", "--others", "--exclude-standard").Output()
+	if err != nil {
+		return ""
+	}
+	var files []string
+	for _, f := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		return ""
+	}
+	shown := files
+	if len(shown) > 8 {
+		shown = shown[:8]
+	}
+	more := ""
+	if len(files) > len(shown) {
+		more = fmt.Sprintf(" (and %d more)", len(files)-len(shown))
+	}
+	return fmt.Sprintf("hint: validate --staged checks what the commit will contain, and these files are not part of it because they are untracked: %s%s.\n"+
+		"      If they belong in the commit, `git add` them (note: `git commit -a` does not add new files).",
+		strings.Join(shown, ", "), more)
 }
 
 func writeJSON(w io.Writer, res *validate.Result) error {
