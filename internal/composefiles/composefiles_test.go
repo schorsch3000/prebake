@@ -78,6 +78,25 @@ func TestSocketMountOnlyInDirectFile(t *testing.T) {
 	}
 }
 
+// The two deployment files use the published image and never build; building is the job of
+// docker-compose.build.yaml, so `docker compose up` cannot silently build a stale local image.
+func TestPublishedImageAndBuildOverride(t *testing.T) {
+	for _, f := range []string{"../../docker-compose.yaml", "../../docker-compose.proxy.yaml"} {
+		svc := dig(t, load(t, f), "services", "prebake")
+		if _, ok := svc["build"]; ok {
+			t.Errorf("%s: must not contain a build section (see docker-compose.build.yaml)", f)
+		}
+		img, _ := svc["image"].(string)
+		if !strings.Contains(img, "PREBAKE_IMAGE") || !strings.Contains(img, "ghcr.io/schorsch3000/prebake:") {
+			t.Errorf("%s: image should be the published one, overridable by PREBAKE_IMAGE: %q", f, img)
+		}
+	}
+	b := dig(t, load(t, "../../docker-compose.build.yaml"), "services", "prebake")
+	if dig(t, b, "build")["context"] != "." || b["image"] != "prebake:local" {
+		t.Errorf("build override: %v", b)
+	}
+}
+
 // The host's time zone is mounted read-only, without creating a missing host path, and the
 // compose files must not set a TZ default (TZ="" would mean UTC to Go and hide the mount).
 func TestHostTimeZoneMounted(t *testing.T) {

@@ -299,7 +299,8 @@ parked/retry state. Logs go to stdout; build logs are kept per job (bounded).
 
 ## 15. Deployment
 
-`docker-compose.yaml` that works out of the box:
+`docker-compose.yaml` that works out of the box (it uses the image published to
+GHCR, see README "Images and releases"; `docker-compose.build.yaml` builds locally):
 
 - service `prebake` running the daemon; mounts `/var/run/docker.sock`, a
   `prebake-data` volume at `/data`.

@@ -1,0 +1,16 @@
+# Build the image from this checkout instead of pulling the published one. Merge it on
+# top of one of the two compose files:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
+#   docker compose -f docker-compose.proxy.yaml -f docker-compose.build.yaml up -d --build
+#
+# (CI uses it too, so the published image is never what gets tested.)
+services:
+  prebake:
+    build:
+      context: .
+      args:
+        VERSION: local
+        REVISION: ${REVISION:-unknown}
+    image: prebake:local
+    pull_policy: never

@@ -21,7 +21,8 @@ if [ "${PREBAKE_PROXY:-}" = 1 ]; then
 else
   compose=(docker compose -f docker-compose.yaml)
 fi
-compose+=(-f docker-compose.ci.yaml)
+# the image under test is always built from this checkout, never the published one
+compose+=(-f docker-compose.build.yaml -f docker-compose.ci.yaml)
 status=http://localhost:8080/status
 
 dump_logs() {

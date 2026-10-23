@@ -1,10 +1,11 @@
-# prebake: set REPO_URL, then `docker compose up -d --build`.
+# prebake: set REPO_URL, then `docker compose up -d`.
 # On first start the daemon prints its SSH public key (also: `docker compose exec prebake prebake show-key`).
 # Add it as a read-only deploy key to the config repo. See README.md.
 services:
   prebake:
-    build: .
-    image: prebake:local
+    # The published image. PREBAKE_IMAGE pins a version or points at your own build, e.g.
+    # ghcr.io/schorsch3000/prebake:1.2.3 (see docker-compose.build.yaml to build locally).
+    image: ${PREBAKE_IMAGE:-ghcr.io/schorsch3000/prebake:latest}
     restart: unless-stopped
     environment:
       REPO_URL: ${REPO_URL:?set REPO_URL to the config repo, e.g. git@github.com:me/prebake-config.git}

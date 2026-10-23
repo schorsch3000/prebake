@@ -1,7 +1,7 @@
 # prebake behind a filtering Docker socket proxy: the daemon container has no Docker
 # socket. Standalone file, use it instead of docker-compose.yaml:
 #
-#   docker compose -f docker-compose.proxy.yaml up -d --build
+#   docker compose -f docker-compose.proxy.yaml up -d
 #   docker compose -f docker-compose.proxy.yaml down
 #
 # (Set COMPOSE_FILE=docker-compose.proxy.yaml in .env to drop the -f.)
@@ -22,8 +22,9 @@
 # needs container access. A Go reverse proxy passes the upgrade through.
 services:
   prebake:
-    build: .
-    image: prebake:local
+    # The published image. PREBAKE_IMAGE pins a version or points at your own build, e.g.
+    # ghcr.io/schorsch3000/prebake:1.2.3 (see docker-compose.build.yaml to build locally).
+    image: ${PREBAKE_IMAGE:-ghcr.io/schorsch3000/prebake:latest}
     restart: unless-stopped
     environment:
       REPO_URL: ${REPO_URL:?set REPO_URL to the config repo, e.g. git@github.com:me/prebake-config.git}

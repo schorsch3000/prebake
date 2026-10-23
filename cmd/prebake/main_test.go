@@ -336,3 +336,12 @@ func TestTriggerAndGCCommands(t *testing.T) {
 		t.Errorf("two arguments: %d", code)
 	}
 }
+
+func TestVersionCommand(t *testing.T) {
+	for _, arg := range []string{"version", "--version", "-v"} {
+		code, out, _ := runCLI(t, arg)
+		if code != 0 || !strings.HasPrefix(out, "prebake dev (") {
+			t.Errorf("%s: %d %q", arg, code, out)
+		}
+	}
+}

@@ -6,6 +6,12 @@ import (
 	"os"
 )
 
+// Set at build time: -ldflags "-X main.version=... -X main.revision=...".
+var (
+	version  = "dev"
+	revision = "unknown"
+)
+
 const usage = `usage: prebake <command>
 
 commands:
@@ -17,6 +23,7 @@ commands:
   trigger       queue a rebuild or refresh now
   dry-run       show what is due when
   gc            run registry garbage collection
+  version       print the version
 `
 
 func main() {
@@ -31,6 +38,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
+		return 0
+	case "version", "-v", "--version":
+		fmt.Fprintf(stdout, "prebake %s (%s)\n", version, revision)
 		return 0
 	case "validate":
 		return cmdValidate(args[1:], stdout, stderr)

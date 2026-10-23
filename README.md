@@ -25,15 +25,21 @@ Design and rationale: [docs/design.md](docs/design.md).
 
 ## Quick start
 
-You need Docker with Compose on the host, and a git repo with the layout below
-(start from [examples/config-repo](examples/config-repo)).
+You need Docker with Compose on the host and a git repo with the layout below
+(start from [examples/config-repo](examples/config-repo)). The image is published
+on GitHub, nothing has to be built:
 
 ```sh
-git clone https://github.com/schorsch3000/prebake && cd prebake
-cp example.env .env             # every setting with its default; set at least REPO_URL
-docker compose up -d --build
+mkdir prebake && cd prebake
+curl -fsSLO https://raw.githubusercontent.com/schorsch3000/prebake/main/docker-compose.yaml
+curl -fsSL  https://raw.githubusercontent.com/schorsch3000/prebake/main/example.env -o .env
+$EDITOR .env                    # every setting with its default; set at least REPO_URL
+docker compose up -d
 docker compose logs prebake | grep ssh-ed25519     # the deploy key, or: docker compose exec prebake prebake show-key
 ```
+
+(For the socket proxy variant fetch `docker-compose.proxy.yaml` instead, see
+"Security".)
 
 Add that key as a **read-only deploy key** to the config repo. Until it is
 accepted the status page shows `waiting-for-deploy-key`; the daemon retries on
@@ -203,6 +209,31 @@ Flags override variables; see `prebake daemon --help`.
   publishes it on the host's loopback only.
 - Use a **read-only** deploy key. Secrets (Pushover) come from the environment or
   Docker secrets, never from the config repo.
+
+## Images and releases
+
+CI publishes `ghcr.io/schorsch3000/prebake` (linux/amd64) once the whole pipeline
+is green:
+
+| ref | tags |
+|---|---|
+| push to `main` | `edge`, `sha-<short commit>` |
+| tag `v1.2.3` | `1.2.3`, `1.2`, `latest` |
+
+The compose files use `latest` by default; set `PREBAKE_IMAGE` in `.env` to pin
+a version or a digest (`ghcr.io/schorsch3000/prebake:1.2.3`,
+`ghcr.io/schorsch3000/prebake@sha256:...`). Upgrade with `docker compose pull && docker compose up -d`.
+`prebake version` shows what is running. To cut a release: `git tag v0.1.0 && git push origin v0.1.0`.
+
+The first publish creates the package as private. Make it public once (GitHub,
+your profile, Packages, `prebake`, Package settings, Change visibility) or
+`docker compose pull` needs a `docker login ghcr.io`.
+
+To run your own build instead of the published image:
+
+```sh
+docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
+```
 
 ## Development
 
