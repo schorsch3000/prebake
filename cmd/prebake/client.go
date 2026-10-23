@@ -93,9 +93,55 @@ func colorFlag(fs *flag.FlagSet) *string {
 	return fs.String("color", "auto", "colored output: auto, always or never (auto: terminal only, off with NO_COLOR)")
 }
 
+// clientVersion is the version of this CLI; tests replace it.
+var clientVersion = func() string { v, _ := versionInfo(); return v }
+
+// parseSemver reads "1.2.3", "v1.2.3" and "1.2.3-rc1"; anything else (dev, local, edge, a branch
+// name) is not comparable.
+func parseSemver(v string) (major, minor, patch int, ok bool) {
+	v = strings.TrimPrefix(v, "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	n := make([]int, 3)
+	for i, p := range parts {
+		x, err := strconv.Atoi(p)
+		if err != nil || x < 0 {
+			return 0, 0, 0, false
+		}
+		n[i] = x
+	}
+	return n[0], n[1], n[2], true
+}
+
+// versionSkew returns a warning when the CLI and the daemon differ in major or minor version
+// (a patch release does not change the API), and "" when they match or cannot be compared (a
+// daemon running `edge` or a development build).
+func versionSkew(client, daemon string) string {
+	cMaj, cMin, _, ok1 := parseSemver(client)
+	dMaj, dMin, _, ok2 := parseSemver(daemon)
+	if !ok1 || !ok2 || (cMaj == dMaj && cMin == dMin) {
+		return ""
+	}
+	if cMaj < dMaj || (cMaj == dMaj && cMin < dMin) {
+		return fmt.Sprintf("this CLI (%s) is older than the daemon (%s): update the CLI, it may lack commands or flags the daemon has", client, daemon)
+	}
+	return fmt.Sprintf("this CLI (%s) is newer than the daemon (%s): update the daemon, it may not know the requests the CLI sends", client, daemon)
+}
+
 // renderStatus renders the status table as text.
 func renderStatus(dto *api.StatusDTO, p palette) string {
 	var b strings.Builder
+	if dto.Version != "" {
+		fmt.Fprintf(&b, "daemon: prebake %s (%s)\n", dto.Version, short(dto.Revision, 7))
+		if w := versionSkew(clientVersion(), dto.Version); w != "" {
+			fmt.Fprintf(&b, "%s\n", p.paint(ansiYellow, "warning: "+w))
+		}
+	}
 	if dto.TimeZone != "" {
 		fmt.Fprintf(&b, "time zone of the build slots: %s\n", dto.TimeZone)
 	}
@@ -247,6 +293,9 @@ func cmdDryRun(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, "prebake dry-run:", err)
 		return 2
+	}
+	if w := versionSkew(clientVersion(), dto.Version); w != "" {
+		fmt.Fprintln(stderr, "warning:", w)
 	}
 	jobs := append([]api.JobDTO(nil), dto.Jobs...)
 	sort.SliceStable(jobs, func(i, k int) bool {

@@ -92,7 +92,7 @@ func fixture() *fakeBackend {
 }
 
 func serve(t *testing.T, b Backend) *httptest.Server {
-	srv := httptest.NewServer(Handler(b, KeyInfo{PublicLine: "ssh-ed25519 AAAA prebake"}, func() time.Time { return t0.Add(time.Minute) }))
+	srv := httptest.NewServer(Handler(b, Info{PublicLine: "ssh-ed25519 AAAA prebake", Version: "0.2.1", Revision: "abcdef1234567890"}, func() time.Time { return t0.Add(time.Minute) }))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -133,6 +133,9 @@ func TestStatusJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &dto); err != nil {
 		t.Fatal(err)
 	}
+	if dto.Version != "0.2.1" || dto.Revision != "abcdef1234567890" {
+		t.Errorf("the daemon's version must be in /status: %q %q", dto.Version, dto.Revision)
+	}
 	if want := t0.Add(time.Minute).Format("MST -07:00"); dto.TimeZone != want {
 		t.Errorf("time_zone = %q, want %q", dto.TimeZone, want)
 	}
@@ -159,7 +162,7 @@ func TestPageEscapesAndShowsState(t *testing.T) {
 	if code != 200 || !strings.HasPrefix(h.Get("Content-Type"), "text/html") {
 		t.Fatalf("%d %v", code, h)
 	}
-	for _, want := range []string{"slots in UTC", "degraded", "aaaaaaaaaaaa", "base", "child", "cuda", "parked", "default-20261022-020000", "sha256:abcde"} {
+	for _, want := range []string{"prebake 0.2.1 (abcdef123456)", "slots in UTC", "degraded", "aaaaaaaaaaaa", "base", "child", "cuda", "parked", "default-20261022-020000", "sha256:abcde"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)
 		}

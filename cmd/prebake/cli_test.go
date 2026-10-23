@@ -500,3 +500,63 @@ func TestStatusDemoFileRendersEveryState(t *testing.T) {
 		t.Error("colors")
 	}
 }
+
+func TestVersionSkew(t *testing.T) {
+	for _, c := range []struct {
+		client, daemon string
+		warn           string // substring of the warning, "" for none
+	}{
+		{"0.2.1", "0.2.1", ""},
+		{"0.2.0", "0.2.3", ""}, // patch releases do not change the API
+		{"v0.2.0", "0.2.0", ""},
+		{"0.2.1", "0.3.0", "older than the daemon"},
+		{"0.3.0", "0.2.9", "newer than the daemon"},
+		{"0.9.0", "1.0.0", "older than the daemon"},
+		{"2.0.0", "1.9.9", "newer than the daemon"},
+		{"0.2.1", "edge", ""},  // a rolling tag cannot be compared
+		{"dev", "0.2.1", ""},   // a development build neither
+		{"0.2.1", "local", ""}, // a locally built image
+		{"0.2.1", "", ""},      // an old daemon that does not report its version
+		{"0.2.1-rc1", "0.3.0", "older than the daemon"},
+		{"0.2", "0.3.0", ""}, // not a full version
+	} {
+		got := versionSkew(c.client, c.daemon)
+		if (c.warn == "") != (got == "") || !strings.Contains(got, c.warn) {
+			t.Errorf("%q vs %q: %q, want %q", c.client, c.daemon, got, c.warn)
+		}
+	}
+}
+
+func TestStatusShowsTheDaemonVersionAndWarnsOnSkew(t *testing.T) {
+	dto := `{"generated_at":"2026-10-22T02:10:00Z","version":"0.3.0","revision":"abcdef1234567","repo":{"state":"ok"},"jobs":[]}`
+	srv, _ := statusServer(t, dto)
+	old := clientVersion
+	defer func() { clientVersion = old }()
+
+	clientVersion = func() string { return "0.2.1" }
+	_, out, _ := runCLI(t, "status", "--color", "never", "--url", srv.URL)
+	if !strings.Contains(out, "daemon: prebake 0.3.0 (abcdef1)") || !strings.Contains(out, "warning: this CLI (0.2.1) is older than the daemon (0.3.0)") {
+		t.Errorf("status:\n%s", out)
+	}
+	_, _, e := runCLI(t, "dry-run", "--url", srv.URL)
+	if !strings.Contains(e, "warning: this CLI (0.2.1) is older") {
+		t.Errorf("dry-run warns on stderr: %q", e)
+	}
+	// matching versions: the line, no warning
+	clientVersion = func() string { return "0.3.2" }
+	_, out, e = runCLI(t, "status", "--color", "never", "--url", srv.URL)
+	if !strings.Contains(out, "daemon: prebake 0.3.0") || strings.Contains(out, "warning") || strings.Contains(e, "warning") {
+		t.Errorf("no skew: %q %q", out, e)
+	}
+	// an old daemon without version: nothing shown, nothing warned
+	old2, _ := statusServer(t, `{"generated_at":"2026-10-22T02:10:00Z","repo":{"state":"ok"},"jobs":[]}`)
+	_, out, _ = runCLI(t, "status", "--color", "never", "--url", old2.URL)
+	if strings.Contains(out, "daemon:") || strings.Contains(out, "warning") {
+		t.Errorf("old daemon: %q", out)
+	}
+	// the warning is yellow
+	clientVersion = func() string { return "0.1.0" }
+	if _, colored, _ := runCLI(t, "status", "--color", "always", "--url", srv.URL); !strings.Contains(colored, ansiYellow+"warning:") {
+		t.Error("colored warning")
+	}
+}

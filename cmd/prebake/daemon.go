@@ -196,7 +196,7 @@ func runDaemon(ctx context.Context, cfg *daemonConfig, log *slog.Logger) error {
 		return fmt.Errorf("status listener: %w", err)
 	}
 	statusSrv := &http.Server{
-		Handler:           api.Handler(d, api.KeyInfo{PublicLine: id.PublicLine, Fingerprint: id.Fingerprint}, nil),
+		Handler:           api.Handler(d, api.Info{PublicLine: id.PublicLine, Fingerprint: id.Fingerprint, Version: v, Revision: r}, nil),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	defer statusSrv.Close()

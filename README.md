@@ -266,6 +266,9 @@ well-formedness.
 fine, yellow is in motion or waiting, red needs attention. `NO_COLOR` or `TERM=dumb`
 switch it off, `--color always|never|auto` overrides.
 
+`prebake status` shows the version of the daemon it talks to (`daemon: prebake 0.2.1 (4b273f3)`, also in `/status` and the web page footer), and
+warns when the CLI and the daemon differ in major or minor version (patch releases never warn; `edge` or development builds cannot be compared).
+
 `prebake status --watch` (or `-w`, with `-n 1s` for the interval, default 2s) is a live
 view that redraws in place until Ctrl-C, shows how long a running build has been going, and
 keeps going when the daemon restarts. It needs a terminal; in scripts, loop around plain

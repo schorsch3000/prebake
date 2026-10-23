@@ -1,6 +1,8 @@
 {
   "generated_at": "2026-10-25T12:00:00Z",
   "time_zone": "CET +01:00",
+  "version": "0.2.1",
+  "revision": "4b273f34088d8a6612e9bdefedc58dc26012a697",
   "repo": { "state": "degraded", "head": "9f8e7d6c5b4a", "active": "1a2b3c4d5e6f",
             "error": "containers/base/junk.txt: stray file: not referenced by the Dockerfile" },
   "jobs": [

@@ -29,8 +29,11 @@ type Backend interface {
 	Logs(container, flavor string, follow bool) (daemon.LogStream, error)
 }
 
-// KeyInfo is the SSH deploy key shown at /pubkey.
-type KeyInfo struct {
+// Info is what the daemon tells about itself: the SSH deploy key shown at /pubkey, and the
+// version and commit it was built from (in /status, so that clients can notice a mismatch).
+type Info struct {
+	Version     string
+	Revision    string
 	PublicLine  string
 	Fingerprint string
 }
@@ -38,6 +41,9 @@ type KeyInfo struct {
 // StatusDTO is the JSON document of GET /status.
 type StatusDTO struct {
 	GeneratedAt time.Time `json:"generated_at"`
+	// Version and Revision identify the daemon build ("0.2.1" and its commit).
+	Version  string `json:"version,omitempty"`
+	Revision string `json:"revision,omitempty"`
 	// TimeZone is the zone the build slots are interpreted in, e.g. "CET +01:00".
 	TimeZone string   `json:"time_zone"`
 	Repo     RepoDTO  `json:"repo"`
@@ -98,7 +104,7 @@ func ToDTO(s daemon.Status, now time.Time) StatusDTO {
 }
 
 // Handler returns the HTTP handler.
-func Handler(b Backend, key KeyInfo, now func() time.Time) http.Handler {
+func Handler(b Backend, key Info, now func() time.Time) http.Handler {
 	if now == nil {
 		now = time.Now
 	}
@@ -135,7 +141,7 @@ func sameOrigin(next http.Handler) http.Handler {
 
 type server struct {
 	b   Backend
-	key KeyInfo
+	key Info
 	now func() time.Time
 }
 
@@ -147,8 +153,15 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	enc.Encode(v)
 }
 
+// dto is the status document with the daemon's own version filled in.
+func (s *server) dto() StatusDTO {
+	d := ToDTO(s.b.Status(), s.now())
+	d.Version, d.Revision = s.key.Version, s.key.Revision
+	return d
+}
+
 func (s *server) status(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, ToDTO(s.b.Status(), s.now()))
+	writeJSON(w, http.StatusOK, s.dto())
 }
 
 func (s *server) pubkey(w http.ResponseWriter, r *http.Request) {
@@ -296,11 +309,11 @@ pre{margin:0;white-space:pre-wrap}
 <td>{{.DateTag}} <code>{{short .Digest}}</code></td>
 </tr>{{else}}<tr><td colspan="7">no containers loaded yet</td></tr>{{end}}
 </table>
-<p><small>generated {{ts .GeneratedAt}} · slots in {{.TimeZone}} · <a href="/status">json</a> · <a href="/pubkey">deploy key</a></small></p>
+<p><small>prebake {{if .Version}}{{.Version}} ({{short .Revision}}){{else}}?{{end}} · generated {{ts .GeneratedAt}} · slots in {{.TimeZone}} · <a href="/status">json</a> · <a href="/pubkey">deploy key</a></small></p>
 </body></html>`))
 
 func (s *server) page(w http.ResponseWriter, r *http.Request) {
-	dto := ToDTO(s.b.Status(), s.now())
+	dto := s.dto()
 	g := dto.GeneratedAt
 	data := struct {
 		StatusDTO
