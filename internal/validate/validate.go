@@ -138,6 +138,11 @@ func (r *Result) global(fsys fs.FS) {
 		return
 	}
 	r.Global = g
+	for name, p := range map[string]*int{"priority_failure": g.Notify.Pushover.PriorityFailure, "priority_recovery": g.Notify.Pushover.PriorityRecovery} {
+		if p != nil && (*p < -2 || *p > 1) {
+			r.add(Error, config.GlobalFile, 0, "notify.pushover.%s %d out of range (-2..1; emergency priority 2 is not supported)", name, *p)
+		}
+	}
 	for i := range g.Slots {
 		for j := i + 1; j < len(g.Slots); j++ {
 			if slotsOverlap(g.Slots[i], g.Slots[j]) {

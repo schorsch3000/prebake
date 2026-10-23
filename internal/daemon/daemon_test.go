@@ -495,3 +495,34 @@ func TestNextBackoff(t *testing.T) {
 		t.Errorf("backoff = %v", seq)
 	}
 }
+
+func TestNotificationPriorityFromConfig(t *testing.T) {
+	h := newHarness(t)
+	h.push("priorities", map[string]string{"prebake.yaml": globalYAML + "notify:\n  pushover:\n    priority_failure: 0\n    priority_recovery: -2\n"})
+	h.sync()
+	h.b.fail["base"] = 2
+	h.tick()
+	h.clk.advance(16 * time.Minute)
+	h.tick() // parked
+	h.d.Trigger("base", "", schedule.Rebuild)
+	h.tick() // recovers
+	h.n.mu.Lock()
+	defer h.n.mu.Unlock()
+	if len(h.n.events) != 2 || h.n.events[0].Priority != 0 || h.n.events[1].Priority != -2 {
+		t.Errorf("events = %+v", h.n.events)
+	}
+}
+
+func TestNotificationPriorityDefaults(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	h.b.fail["base"] = 2
+	h.tick()
+	h.clk.advance(16 * time.Minute)
+	h.tick()
+	h.n.mu.Lock()
+	defer h.n.mu.Unlock()
+	if len(h.n.events) != 1 || h.n.events[0].Priority != 1 {
+		t.Errorf("events = %+v", h.n.events)
+	}
+}

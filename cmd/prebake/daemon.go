@@ -19,6 +19,7 @@ import (
 	"github.com/schorsch3000/prebake/internal/build"
 	"github.com/schorsch3000/prebake/internal/daemon"
 	"github.com/schorsch3000/prebake/internal/gitsync"
+	"github.com/schorsch3000/prebake/internal/notify"
 	"github.com/schorsch3000/prebake/internal/registry"
 	"github.com/schorsch3000/prebake/internal/state"
 )
@@ -160,10 +161,19 @@ func runDaemon(ctx context.Context, cfg *daemonConfig, log *slog.Logger) error {
 		URL: cfg.RepoURL, Branch: cfg.Branch, Dir: filepath.Join(cfg.DataDir, "repo"),
 		Identity: id, KnownHosts: cfg.KnownHosts,
 	}
+	notifier, notifyOn, err := notify.FromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	if notifyOn {
+		log.Info("Pushover notifications enabled")
+	} else {
+		log.Info("Pushover notifications disabled (set PUSHOVER_TOKEN and PUSHOVER_USER to enable)")
+	}
 	runner := &build.Runner{Docker: &build.CLI{}, Registry: cfg.RegistryHost}
 	d := daemon.New(daemon.Options{PollInterval: cfg.PollInterval, Logger: log}, src, runner,
 		&daemon.LocalRegistry{Server: reg, Client: &registry.Client{Base: "http://127.0.0.1:" + writePort}},
-		store, nil)
+		store, notifier)
 
 	errc := make(chan error, 1)
 	go func() { errc <- d.Run(ctx) }()

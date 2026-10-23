@@ -17,10 +17,14 @@ const (
 
 // Event is one notification. Title is short, Message may be multi-line.
 type Event struct {
-	Type    Type
-	Title   string
-	Message string
+	Type     Type
+	Title    string
+	Message  string
+	Priority int // Pushover scale -2..1, set by the daemon from the repo config
 }
+
+// Failure reports whether the event type is a problem (as opposed to a recovery).
+func (t Type) Failure() bool { return t != Recovered }
 
 // Notifier delivers events. Implementations must not block for long; the daemon
 // calls Notify from its main loop.

@@ -129,3 +129,18 @@ func TestValidName(t *testing.T) {
 		}
 	}
 }
+
+func TestPushoverPriorityDefaultsAndExplicitZero(t *testing.T) {
+	g, err := ParseGlobal("g.yaml", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *g.Notify.Pushover.PriorityFailure != 1 || *g.Notify.Pushover.PriorityRecovery != -1 {
+		t.Errorf("defaults: %d %d", *g.Notify.Pushover.PriorityFailure, *g.Notify.Pushover.PriorityRecovery)
+	}
+	// an explicit 0 must not be mistaken for "unset"
+	g, err = ParseGlobal("g.yaml", []byte("notify:\n  pushover:\n    priority_failure: 0\n    priority_recovery: -2\n"))
+	if err != nil || *g.Notify.Pushover.PriorityFailure != 0 || *g.Notify.Pushover.PriorityRecovery != -2 {
+		t.Errorf("explicit: %+v %v", g.Notify, err)
+	}
+}

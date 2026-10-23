@@ -151,6 +151,21 @@ func (d *Daemon) schedulerLoop(ctx context.Context) {
 }
 
 func (d *Daemon) notify(ctx context.Context, e notify.Event) {
+	d.mu.Lock()
+	repo := d.repo
+	d.mu.Unlock()
+	if repo != nil {
+		p := repo.Global.Notify.Pushover
+		if e.Type.Failure() {
+			e.Priority = *p.PriorityFailure
+		} else {
+			e.Priority = *p.PriorityRecovery
+		}
+	} else if e.Type.Failure() {
+		e.Priority = 1
+	} else {
+		e.Priority = -1
+	}
 	if err := d.notifier.Notify(ctx, e); err != nil {
 		d.log.Error("notification failed", "type", e.Type, "err", err)
 	}

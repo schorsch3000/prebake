@@ -42,9 +42,11 @@ type Notify struct {
 	Pushover Pushover `yaml:"pushover"`
 }
 
+// Pushover priorities, -2 (silent) to 1 (high). Priority 2 (emergency) needs
+// retry/expire handling and is not supported. Nil means "use the default".
 type Pushover struct {
-	PriorityFailure  int `yaml:"priority_failure"`
-	PriorityRecovery int `yaml:"priority_recovery"`
+	PriorityFailure  *int `yaml:"priority_failure"`
+	PriorityRecovery *int `yaml:"priority_recovery"`
 }
 
 type Container struct {
@@ -86,6 +88,14 @@ func (g *Global) ApplyDefaults() {
 	}
 	if g.Keep == 0 {
 		g.Keep = 5
+	}
+	if g.Notify.Pushover.PriorityFailure == nil {
+		v := 1
+		g.Notify.Pushover.PriorityFailure = &v
+	}
+	if g.Notify.Pushover.PriorityRecovery == nil {
+		v := -1
+		g.Notify.Pushover.PriorityRecovery = &v
 	}
 	if g.Registry.GCSlotOnly == nil {
 		t := true

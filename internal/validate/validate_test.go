@@ -213,3 +213,16 @@ func TestMatchGlob(t *testing.T) {
 		}
 	}
 }
+
+func TestPushoverPriorityRange(t *testing.T) {
+	m := base()
+	m["prebake.yaml"] = goodGlobal + "notify:\n  pushover:\n    priority_failure: 2\n    priority_recovery: -3\n"
+	r := FS(repo(m))
+	if !has(r, Error, "priority_failure 2 out of range") || !has(r, Error, "priority_recovery -3 out of range") {
+		t.Errorf("got %v", r.Issues)
+	}
+	m["prebake.yaml"] = goodGlobal + "notify:\n  pushover:\n    priority_failure: 0\n    priority_recovery: -2\n"
+	if r := FS(repo(m)); len(r.Issues) != 0 {
+		t.Errorf("valid priorities rejected: %v", r.Issues)
+	}
+}
