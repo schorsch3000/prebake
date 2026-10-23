@@ -239,8 +239,13 @@ retention needs delete and GC).
 - Global `keep: N` (ceiling) and optional per-container `keep: M`, validated
   `M <= N`. Effective keep is the container value if set, else the global value.
 - An "image" is a date-stamped tag; `latest` and flavor aliases do not count.
-- Never pruned: the currently promoted tag and any tag a dependent image's last
-  build was based on.
+- Never pruned: the date tag the alias currently points to (the promoted tag),
+  even if it is not among the newest; so a flavor can briefly hold more than
+  `keep` tags. A dependent image's parent tag needs no protection: an image
+  manifest is self-contained (its layers are blobs referenced by the child
+  itself), so deleting the parent's tag does not break the child.
+- Selection is per flavor on the date tag's timestamp; aliases and any
+  non-date tags are never selected (`internal/retention`).
 - After a successful build: delete manifests beyond the effective keep (oldest
   first), per container and flavor.
 - Blob GC runs while holding the build lock; external writes are impossible and
