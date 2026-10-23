@@ -1,9 +1,138 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
-func TestUsageMentionsCommands(t *testing.T) {
-	if usage == "" {
-		t.Fatal("usage must not be empty")
+func runCLI(t *testing.T, args ...string) (code int, out, errOut string) {
+	t.Helper()
+	var o, e bytes.Buffer
+	code = run(args, &o, &e)
+	return code, o.String(), e.String()
+}
+
+func write(t *testing.T, root, rel, content string) {
+	t.Helper()
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func gitT(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", root,
+		"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func goodRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	gitT(t, root, "init", "-q")
+	write(t, root, "prebake.yaml", "keep: 5\n")
+	write(t, root, "containers/dev/Dockerfile", "FROM debian\n")
+	write(t, root, "containers/dev/container.yaml", "tests: [\"true\"]\n")
+	return root
+}
+
+func TestUsageAndUnknown(t *testing.T) {
+	if code, out, _ := runCLI(t, "--help"); code != 0 || !strings.Contains(out, "validate") {
+		t.Errorf("help: %d %q", code, out)
+	}
+	if code, _, _ := runCLI(t); code != 2 {
+		t.Errorf("no args: %d", code)
+	}
+	if code, _, _ := runCLI(t, "nope"); code != 2 {
+		t.Errorf("unknown: %d", code)
+	}
+}
+
+func TestValidateWorktree(t *testing.T) {
+	root := goodRepo(t)
+	if code, out, e := runCLI(t, "validate", "--repo", root); code != 0 || out != "" {
+		t.Fatalf("clean repo: %d %q %q", code, out, e)
+	}
+	write(t, root, "containers/dev/junk.txt", "x")
+	code, out, _ := runCLI(t, "validate", "--repo", root)
+	if code != 1 || !strings.Contains(out, "containers/dev/junk.txt: stray file") {
+		t.Fatalf("stray: %d %q", code, out)
+	}
+}
+
+func TestValidateStagedJudgesIndexNotDisk(t *testing.T) {
+	root := goodRepo(t)
+	gitT(t, root, "add", "-A")
+	// unstaged junk on disk must not matter
+	write(t, root, "containers/dev/junk.txt", "x")
+	if code, out, _ := runCLI(t, "validate", "--repo", root, "--staged"); code != 0 {
+		t.Fatalf("staged ignores unstaged junk: %d %q", code, out)
+	}
+	// staged junk must fail, even if removed from disk afterwards
+	gitT(t, root, "add", "containers/dev/junk.txt")
+	os.Remove(filepath.Join(root, "containers/dev/junk.txt"))
+	if code, out, _ := runCLI(t, "validate", "--repo", root, "--staged"); code != 1 || !strings.Contains(out, "junk.txt") {
+		t.Fatalf("staged junk: %d %q", code, out)
+	}
+}
+
+func TestValidateRev(t *testing.T) {
+	root := goodRepo(t)
+	gitT(t, root, "add", "-A")
+	gitT(t, root, "commit", "-q", "-m", "good")
+	write(t, root, "containers/dev/container.yaml", "refrsh_cmd: x\n")
+	gitT(t, root, "commit", "-q", "-am", "bad")
+	if code, out, _ := runCLI(t, "validate", "--repo", root, "--rev", "HEAD~1"); code != 0 {
+		t.Fatalf("good rev: %d %q", code, out)
+	}
+	code, out, _ := runCLI(t, "validate", "--repo", root, "--rev", "HEAD")
+	if code != 1 || !strings.Contains(out, "container.yaml:1:") {
+		t.Fatalf("bad rev: %d %q", code, out)
+	}
+	if code, _, e := runCLI(t, "validate", "--repo", root, "--rev", "nonexistent"); code != 2 {
+		t.Fatalf("bad ref should be internal error: %d %q", code, e)
+	}
+}
+
+func TestValidateStrictAndJSON(t *testing.T) {
+	root := goodRepo(t)
+	write(t, root, "containers/dev/container.yaml", "refresh_cmd: x\n") // warning: no tests
+	if code, _, _ := runCLI(t, "validate", "--repo", root); code != 0 {
+		t.Errorf("warning must not fail: %d", code)
+	}
+	if code, _, _ := runCLI(t, "validate", "--repo", root, "--strict"); code != 1 {
+		t.Errorf("--strict must fail on warning: %d", code)
+	}
+	code, out, _ := runCLI(t, "validate", "--repo", root, "--format", "json")
+	var got struct {
+		Errors, Warnings int
+		Issues           []struct{ Severity, File, Message string }
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil || code != 0 || got.Warnings != 1 || got.Issues[0].Severity != "warning" {
+		t.Fatalf("json: %d %v %q", code, err, out)
+	}
+}
+
+func TestValidateUsageErrors(t *testing.T) {
+	for _, args := range [][]string{
+		{"validate", "--staged", "--rev", "HEAD"},
+		{"validate", "--format", "xml"},
+		{"validate", "extra"},
+		{"validate", "--repo", "/nonexistent-dir-xyz"},
+	} {
+		if code, _, _ := runCLI(t, args...); code != 2 {
+			t.Errorf("%v: want exit 2, got %d", args, code)
+		}
 	}
 }

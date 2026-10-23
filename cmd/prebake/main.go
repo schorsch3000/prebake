@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -19,18 +20,25 @@ commands:
 `
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		fmt.Fprint(stderr, usage)
+		return 2
 	}
-	switch os.Args[1] {
+	switch args[0] {
 	case "-h", "--help", "help":
-		fmt.Print(usage)
-	case "daemon", "validate", "install-hook", "show-key", "status", "trigger", "dry-run", "gc":
-		fmt.Fprintf(os.Stderr, "prebake %s: not implemented\n", os.Args[1])
-		os.Exit(2)
+		fmt.Fprint(stdout, usage)
+		return 0
+	case "validate":
+		return cmdValidate(args[1:], stdout, stderr)
+	case "daemon", "install-hook", "show-key", "status", "trigger", "dry-run", "gc":
+		fmt.Fprintf(stderr, "prebake %s: not implemented\n", args[0])
+		return 2
 	default:
-		fmt.Fprintf(os.Stderr, "prebake: unknown command %q\n\n%s", os.Args[1], usage)
-		os.Exit(2)
+		fmt.Fprintf(stderr, "prebake: unknown command %q\n\n%s", args[0], usage)
+		return 2
 	}
 }
