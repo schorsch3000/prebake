@@ -6,7 +6,9 @@ set -euo pipefail
 
 origin=${CI_ORIGIN:-/tmp/ci-origin.git}
 work=$(mktemp -d)
-export CI_ORIGIN=$origin REPO_URL=/origin.git
+gitconfig=$work/gitconfig
+printf '[safe]\n\tdirectory = *\n' > "$gitconfig"
+export CI_ORIGIN=$origin CI_GITCONFIG=$gitconfig REPO_URL=/origin.git
 # PREBAKE_PROXY=1 runs the daemon behind the filtering docker socket proxy.
 # Order matters: the proxy file overrides the base volumes, the CI file adds to them.
 compose=(docker compose -f docker-compose.yaml)

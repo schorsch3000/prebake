@@ -6,9 +6,11 @@ services:
       REPO_URL: /origin.git
       POLL_INTERVAL: 5s
       JITTER: 0s
-      # the mounted repo belongs to the runner user, not to root in the container
-      GIT_CONFIG_COUNT: "1"
-      GIT_CONFIG_KEY_0: safe.directory
-      GIT_CONFIG_VALUE_0: "*"
+      # The mounted repo belongs to the runner user, not to root in the container, so git
+      # refuses it ("dubious ownership"). safe.directory only counts from a config file:
+      # GIT_CONFIG_COUNT/-c style settings are dropped when git spawns upload-pack for a
+      # local clone, but GIT_CONFIG_GLOBAL is inherited.
+      GIT_CONFIG_GLOBAL: /ci-gitconfig
     volumes:
       - ${CI_ORIGIN:-/tmp/ci-origin.git}:/origin.git:ro
+      - ${CI_GITCONFIG:-/tmp/ci-gitconfig}:/ci-gitconfig:ro

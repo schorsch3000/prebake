@@ -31,9 +31,12 @@ func classify(op string, err error, output string) error {
 	switch {
 	case strings.Contains(out, "REMOTE HOST IDENTIFICATION HAS CHANGED"), strings.Contains(out, "Host key verification failed"):
 		return &HostKeyError{Output: out}
+	// Only text that really means "the remote does not accept our key". The generic
+	// "Could not read from remote repository ... access rights" line is deliberately not
+	// matched: git prints it for every failure (bad path, ownership, network), and calling
+	// those "waiting for deploy key" would send people looking in the wrong place.
 	case strings.Contains(out, "Permission denied (publickey"), strings.Contains(out, "Permission denied, please try again"),
-		strings.Contains(out, "Authentication failed"), strings.Contains(out, "Repository not found"),
-		strings.Contains(out, "Could not read from remote repository") && strings.Contains(out, "access rights"):
+		strings.Contains(out, "Authentication failed"), strings.Contains(out, "Repository not found"):
 		return &AuthError{Output: out}
 	}
 	return fmt.Errorf("%s: %v: %s", op, err, out)

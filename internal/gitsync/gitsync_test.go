@@ -120,9 +120,18 @@ func TestClassify(t *testing.T) {
 	if err := classify("git fetch", e, "Host key verification failed."); !errors.As(err, &he) {
 		t.Errorf("host key: %v", err)
 	}
-	err := classify("git fetch", e, "fatal: unable to access: Could not resolve host")
-	if errors.As(err, &ae) || errors.As(err, &he) {
-		t.Errorf("network errors are neither: %v", err)
+	for name, out := range map[string]string{
+		"network":   "fatal: unable to access: Could not resolve host",
+		"ownership": "fatal: detected dubious ownership in repository at '/origin.git'\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.",
+		"bad path":  "fatal: '/nope.git' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.",
+	} {
+		err := classify("git fetch", e, out)
+		if errors.As(err, &ae) || errors.As(err, &he) {
+			t.Errorf("%s: must not be reported as an auth or host key problem: %v", name, err)
+		}
+		if !strings.Contains(err.Error(), strings.SplitN(out, "\n", 2)[0]) {
+			t.Errorf("%s: the real cause must stay visible: %v", name, err)
+		}
 	}
 }
 
