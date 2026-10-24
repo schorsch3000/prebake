@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -48,11 +47,7 @@ func (u *diskUsage) measure(now time.Time) *DiskDTO {
 	size := u.cached
 	u.mu.Unlock()
 	d := &DiskDTO{RegistryBytes: size}
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(u.dir, &st); err == nil {
-		d.FreeBytes = st.Bavail * uint64(st.Bsize)
-		d.TotalBytes = st.Blocks * uint64(st.Bsize)
-	}
+	d.FreeBytes, d.TotalBytes = fsSpace(u.dir)
 	return d
 }
 
