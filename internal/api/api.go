@@ -38,6 +38,8 @@ type Info struct {
 	Revision    string
 	PublicLine  string
 	Fingerprint string
+	// StorageDir is the registry storage whose disk usage /status reports; empty leaves it out.
+	StorageDir string
 }
 
 // OrphanDTO is a container flavor that is no longer in the config but still has images.
@@ -59,6 +61,8 @@ type StatusDTO struct {
 	TimeZone string   `json:"time_zone"`
 	Repo     RepoDTO  `json:"repo"`
 	Jobs     []JobDTO `json:"jobs"`
+	// Disk is the space the registry takes; absent when the daemon does not know its storage.
+	Disk *DiskDTO `json:"disk,omitempty"`
 	// Orphans are images of containers and flavors that are no longer in the config.
 	Orphans []OrphanDTO `json:"orphans,omitempty"`
 }
@@ -128,7 +132,7 @@ func Handler(b Backend, key Info, now func() time.Time) http.Handler {
 	if now == nil {
 		now = time.Now
 	}
-	s := &server{b: b, key: key, now: now}
+	s := &server{b: b, key: key, now: now, disk: newDiskUsage(key.StorageDir)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.page)
 	mux.HandleFunc("GET /status", s.status)
@@ -165,6 +169,8 @@ type server struct {
 	b   Backend
 	key Info
 	now func() time.Time
+	// disk measures the registry storage (nil: not reported).
+	disk *diskUsage
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -179,6 +185,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func (s *server) dto() StatusDTO {
 	d := ToDTO(s.b.Status(), s.now())
 	d.Version, d.Revision = s.key.Version, s.key.Revision
+	d.Disk = s.disk.measure(s.now())
 	return d
 }
 
@@ -350,6 +357,7 @@ pre{margin:0;white-space:pre-wrap}
 {{if and .Repo.Head (ne .Repo.Head .Repo.Active)}} · newest <code>{{short .Repo.Head}}</code>{{end}}
 · last fetch {{ts .Repo.LastFetch}}</p>
 {{if .Repo.Error}}<pre>{{.Repo.Error}}</pre>{{end}}
+{{if .Disk}}<p>disk: {{.Disk.Summary}}</p>{{end}}
 <table>
 <tr><th>container</th><th>flavor</th><th>state</th><th>last rebuild</th><th>last refresh</th><th>next</th><th>image</th></tr>
 {{range .Jobs}}<tr>

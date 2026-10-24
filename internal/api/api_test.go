@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -480,5 +482,41 @@ func TestPurgeEndpoint(t *testing.T) {
 	}
 	if code, _ := post(t, srv.URL+"/purge/old", map[string]string{"Origin": "http://evil.example"}); code != 403 {
 		t.Errorf("cross-origin purge must be refused: %d", code)
+	}
+}
+
+func TestStatusReportsDiskUsage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "blobs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "blobs", "a"), make([]byte, 1500), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(Handler(fixture(), Info{StorageDir: dir}, func() time.Time { return t0 }))
+	t.Cleanup(srv.Close)
+	_, body, _ := get(t, srv.URL+"/status")
+	var dto StatusDTO
+	if err := json.Unmarshal([]byte(body), &dto); err != nil {
+		t.Fatal(err)
+	}
+	if dto.Disk == nil || dto.Disk.RegistryBytes != 1500 || dto.Disk.TotalBytes == 0 {
+		t.Fatalf("disk = %+v", dto.Disk)
+	}
+	if _, page, _ := get(t, srv.URL+"/"); !strings.Contains(page, "registry 1.5 KiB") {
+		t.Fatalf("page lacks disk usage:\n%s", page)
+	}
+	// no storage dir: nothing reported
+	_, body, _ = get(t, serve(t, fixture()).URL+"/status")
+	if strings.Contains(body, `"disk"`) {
+		t.Fatal("disk reported without a storage dir")
+	}
+}
+
+func TestHumanBytes(t *testing.T) {
+	for n, want := range map[uint64]string{0: "0 B", 1023: "1023 B", 1024: "1.0 KiB", 3 << 30: "3.0 GiB", 5 << 40: "5.0 TiB"} {
+		if got := HumanBytes(n); got != want {
+			t.Errorf("HumanBytes(%d) = %q, want %q", n, got, want)
+		}
 	}
 }

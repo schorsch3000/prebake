@@ -150,6 +150,9 @@ func renderStatus(dto *api.StatusDTO, p palette) string {
 	if dto.Repo.Error != "" {
 		fmt.Fprintf(&b, "      %s\n", p.paint(ansiRed, strings.ReplaceAll(strings.TrimSpace(dto.Repo.Error), "\n", "\n      ")))
 	}
+	if dto.Disk != nil {
+		fmt.Fprintf(&b, "disk: %s\n", dto.Disk.Summary())
+	}
 	rows := [][]cell{{{"CONTAINER", ansiBold}, {"FLAVOR", ansiBold}, {"STATE", ansiBold}, {"LAST REBUILD", ansiBold}, {"LAST REFRESH", ansiBold}, {"NEEDS", ansiBold}, {"ERROR", ansiBold}}}
 	for _, j := range dto.Jobs {
 		state := j.State

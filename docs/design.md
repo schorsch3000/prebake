@@ -317,6 +317,8 @@ Status listener (default `:8080`, read-only except trigger, no auth):
   branch yet, so a client that has just pushed asks again until it is; another `branch` is ignored.
 - `GET /status` also carries `version`/`revision` of the daemon and, per job, `needs`: why work is pending
   (absent, stale against git, interval over, early start), taken from the last scheduler pass.
+- `GET /status` also carries `disk`: size of the registry storage (cached 30 s) and free/total space of
+  its file system; `prebake status` and the web page show it as one line.
 - `GET /logs/<container>[/<flavor>]?follow=1&tail=N`: build output as a streamed text
   response. The running build is kept in memory (last 512 KiB), the last finished one
   also; after a restart the last recorded log of the state database is served. With
