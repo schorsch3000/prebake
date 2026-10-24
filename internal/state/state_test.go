@@ -188,6 +188,7 @@ func TestMigrationAddsInputsHashToExistingDatabase(t *testing.T) {
 	}
 	// simulate a database from before migration 2
 	s.db.Exec(`ALTER TABLE images DROP COLUMN inputs_hash`)
+	s.db.Exec(`ALTER TABLE images DROP COLUMN refresh_checked`)
 	s.db.Exec(`DROP TABLE removed`)
 	s.db.Exec(`PRAGMA user_version = 1`)
 	s.db.Exec(`INSERT INTO images (container, flavor, last_rebuild) VALUES ('old', 'default', 5)`)
@@ -198,7 +199,7 @@ func TestMigrationAddsInputsHashToExistingDatabase(t *testing.T) {
 	}
 	defer s.Close()
 	img, err := s.ImageState("old", "default")
-	if err != nil || img.LastRebuild.IsZero() || img.InputsHash != "" {
+	if err != nil || img.LastRebuild.IsZero() || img.InputsHash != "" || img.RefreshChecked != "" {
 		t.Fatalf("%+v %v", img, err)
 	}
 }
@@ -252,5 +253,37 @@ func TestRemovedRecordsAndForget(t *testing.T) {
 	}
 	if all, _ := s.Removed(); len(all) != 1 {
 		t.Errorf("removed: %v", all)
+	}
+}
+
+func TestRefreshCheckedRecordedOnlyByRebuildsAndAdoptedOnce(t *testing.T) {
+	s := open(t)
+	r := rec(schedule.Rebuild, true, t0)
+	r.RefreshChecked = "h1"
+	s.RecordJob(r)
+	if img, _ := s.ImageState("dev", "default"); img.RefreshChecked != "h1" {
+		t.Fatalf("%+v", img)
+	}
+	s.RecordJob(rec(schedule.Refresh, true, t0.Add(time.Hour))) // no value: untouched
+	f := rec(schedule.Rebuild, false, t0.Add(2*time.Hour))
+	f.RefreshChecked = "h2"
+	s.RecordJob(f) // failed: untouched
+	if img, _ := s.ImageState("dev", "default"); img.RefreshChecked != "h1" {
+		t.Errorf("%+v", img)
+	}
+	s.SetRefreshChecked("dev", "default", "adopted", false)
+	if img, _ := s.ImageState("dev", "default"); img.RefreshChecked != "h1" {
+		t.Errorf("adoption must not overwrite: %+v", img)
+	}
+	s.SetRefreshChecked("dev", "default", "none", true)
+	if img, _ := s.ImageState("dev", "default"); img.RefreshChecked != "none" {
+		t.Errorf("force overwrites: %+v", img)
+	}
+	old := rec(schedule.Rebuild, true, t0)
+	old.Container = "legacy"
+	s.RecordJob(old)
+	s.SetRefreshChecked("legacy", "default", "adopted", false)
+	if img, _ := s.ImageState("legacy", "default"); img.RefreshChecked != "adopted" {
+		t.Errorf("unknown value is adopted: %+v", img)
 	}
 }

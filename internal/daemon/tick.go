@@ -110,6 +110,24 @@ func (d *Daemon) candidates(ctx context.Context, repo *config.Repo, now time.Tim
 			out = append(out, candidate{k, schedule.Rebuild, prioStale, img.LastRebuild, true, "build inputs changed in git"})
 			continue
 		}
+		// The refresh_cmd is verified by a rebuild (it is run once on the new image). A different
+		// command than the verified one means the image has not been checked for it yet: rebuild.
+		// Images built before this was recorded are assumed fine, and removing the command leaves
+		// nothing to verify.
+		wantRefresh := config.RefreshHash(repo.Containers[k.Container].RefreshCmd)
+		switch {
+		case img.RefreshChecked == "":
+			if err := d.store.SetRefreshChecked(k.Container, k.Flavor, wantRefresh, false); err != nil {
+				d.log.Error("cannot record the refresh_cmd fingerprint", "key", k, "err", err)
+			}
+		case img.RefreshChecked != wantRefresh && wantRefresh == "none":
+			if err := d.store.SetRefreshChecked(k.Container, k.Flavor, wantRefresh, true); err != nil {
+				d.log.Error("cannot record the refresh_cmd fingerprint", "key", k, "err", err)
+			}
+		case img.RefreshChecked != wantRefresh:
+			out = append(out, candidate{k, schedule.Rebuild, prioStale, img.LastRebuild, true, "refresh_cmd changed: a rebuild verifies it"})
+			continue
+		}
 		eff := repo.Containers[k.Container].Effective(repo.Global)
 		dec := schedule.Decide(repo.Global.Slots, policyOf(eff), img.State, now, schedule.Jitter(k.String(), d.opts.Jitter))
 		if dec.Run {
@@ -322,6 +340,7 @@ func (d *Daemon) runJob(ctx context.Context, repo *config.Repo, job schedule.Job
 		if res.Kind == schedule.Rebuild {
 			// only a rebuild starts from the current inputs; a refresh stacks on the old image
 			rec.InputsHash = repo.InputsHash(k.Container, k.Flavor)
+			rec.RefreshChecked = config.RefreshHash(c.RefreshCmd) // the runner verified it
 		}
 	}
 	if err != nil {

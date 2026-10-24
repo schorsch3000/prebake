@@ -811,7 +811,7 @@ func TestSchedulerOnlyChangesDoNotRebuild(t *testing.T) {
 	h.sync()
 	h.tick()
 	h.b.take()
-	h.push("tune base", map[string]string{"containers/base/container.yaml": "tests: [\"false\"]\nkeep: 3\nrefresh_cmd: other\nrefresh_interval: 2d\n"})
+	h.push("tune base", map[string]string{"containers/base/container.yaml": "tests: [\"false\"]\nkeep: 3\nrefresh_interval: 2d\n"})
 	h.sync()
 	h.tick()
 	if got := h.b.take(); len(got) != 0 {
@@ -1483,5 +1483,120 @@ func TestFlavorOfTag(t *testing.T) {
 		if got := flavorOfTag(tag); got != want {
 			t.Errorf("%q: %q, want %q", tag, got, want)
 		}
+	}
+}
+
+// --- refresh_cmd is verified by a rebuild ---------------------------------------------------------
+
+func baseYAML(refresh string) map[string]string {
+	y := "tests: [\"true\"]\nkeep: 2\n"
+	if refresh != "" {
+		y += "refresh_cmd: " + refresh + "\n"
+	}
+	return map[string]string{"containers/base/container.yaml": y}
+}
+
+func TestChangedRefreshCommandTriggersARebuildThatVerifiesIt(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	h.tick()
+	h.b.take()
+	if img, _ := h.store.ImageState("base", "default"); img.RefreshChecked != config.RefreshHash("") {
+		t.Fatalf("a rebuild without a command records 'none': %q", img.RefreshChecked)
+	}
+
+	// a refresh_cmd appears: the image was never verified for it
+	h.b.fail["base"] = 5 // keep the work pending so that the reason is visible
+	h.push("add refresh_cmd", baseYAML("apt-get update"))
+	h.sync()
+	h.tick()
+	if got, _ := needsOf(h.d.Status(), "base:default"); got != "refresh_cmd changed: a rebuild verifies it" {
+		t.Errorf("needs = %q", got)
+	}
+	h.b.fail["base"] = 0
+	h.clk.advance(16 * time.Minute)
+	h.tick()
+	if got := h.b.take(); len(got) == 0 || got[len(got)-1] != "base:default rebuild" {
+		t.Fatalf("builds = %v", got)
+	}
+	img, _ := h.store.ImageState("base", "default")
+	if img.RefreshChecked != config.RefreshHash("apt-get update") {
+		t.Errorf("the rebuild records what it verified: %q", img.RefreshChecked)
+	}
+	h.tick()
+	if got := h.b.take(); len(got) != 0 {
+		t.Errorf("verified once: %v", got)
+	}
+
+	// whitespace is not a change
+	h.push("reformat", baseYAML("\"  apt-get update  \""))
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 0 {
+		t.Errorf("the same command: %v", got)
+	}
+	// a different command is
+	h.push("other command", baseYAML("apt-get upgrade"))
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 1 || got[0] != "base:default rebuild" {
+		t.Errorf("a different command is verified by a rebuild: %v", got)
+	}
+	// removing the command leaves nothing to verify: no rebuild
+	h.push("drop refresh_cmd", baseYAML(""))
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 0 {
+		t.Errorf("removing it needs no rebuild: %v", got)
+	}
+	if img, _ := h.store.ImageState("base", "default"); img.RefreshChecked != "none" {
+		t.Errorf("recorded as none: %q", img.RefreshChecked)
+	}
+	// ... and bringing the command back does: it was not verified in between
+	h.push("bring it back", baseYAML("apt-get upgrade"))
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 1 {
+		t.Errorf("back again: %v", got)
+	}
+}
+
+func TestImagesBuiltBeforeTheFingerprintExistedAreAdopted(t *testing.T) {
+	h := narrowSlotHarness(t)
+	h.push("refresh_cmd on base", baseYAML("apt-get update"))
+	h.seedBuilt("base", schedule.Rebuild, time.Hour) // no fingerprints recorded (older daemon)
+	h.seedBuilt("child", schedule.Rebuild, time.Hour)
+	h.seedBuilt("solo", schedule.Rebuild, time.Hour)
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 0 {
+		t.Fatalf("an upgrade must not rebuild everything: %v", got)
+	}
+	if img, _ := h.store.ImageState("base", "default"); img.RefreshChecked != config.RefreshHash("apt-get update") {
+		t.Errorf("adopted: %q", img.RefreshChecked)
+	}
+	h.push("change it", baseYAML("apt-get upgrade"))
+	h.sync()
+	h.tick()
+	if got := h.b.take(); len(got) != 1 || got[0] != "base:default rebuild" {
+		t.Errorf("after adoption changes are detected: %v", got)
+	}
+}
+
+func TestARefreshDoesNotRecordTheVerification(t *testing.T) {
+	h := newHarness(t)
+	h.sync()
+	h.tick()
+	h.b.take()
+	h.push("add refresh_cmd", baseYAML("apt-get update"))
+	h.sync()
+	h.d.mu.Lock()
+	repo := h.d.repo
+	h.d.mu.Unlock()
+	// a manual refresh runs the command (that is what it is) but the image is still not
+	// marked as verified by a rebuild... the refresh cannot have changed the build inputs
+	h.d.runJob(context.Background(), repo, schedule.Job{Key: schedule.Key{Container: "base", Flavor: "default"}, Kind: schedule.Refresh})
+	if img, _ := h.store.ImageState("base", "default"); img.RefreshChecked == config.RefreshHash("apt-get update") {
+		t.Errorf("only a rebuild records the verification: %q", img.RefreshChecked)
 	}
 }

@@ -182,7 +182,8 @@ For each job:
      generated Dockerfile layered on the previous image (pulled from the
      registry if not in the local store). Without `refresh_cmd`, or without a
      previous image, the job is upgraded to a rebuild and a note is recorded.
-4. Run `tests:` commands (if any) as `RUN` steps of a throwaway build `FROM` the
+4. Run `tests:` commands (if any), and for a rebuild also the `refresh_cmd` once (the refresh step itself:
+   a refresh_cmd that cannot run is found now, not at the first refresh), as `RUN` steps of a throwaway build `FROM` the
    candidate (exec-form `sh -c`, `--no-cache`). No container is started, so the
    daemon needs no container API access (see §15, socket proxy).
 5. Promote: tag and push the date tag `<flavor>-<YYYYmmdd-HHMMSS>` first; only

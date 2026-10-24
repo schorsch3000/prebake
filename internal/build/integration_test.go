@@ -194,3 +194,31 @@ func TestIntegrationParentChildAndFlavor(t *testing.T) {
 		t.Fatalf("flavor alias: %+v tags=%v", cres, tags(t, child))
 	}
 }
+
+// A rebuild runs the refresh_cmd once on the new image; a broken one stops the promotion.
+func TestIntegrationRebuildVerifiesTheRefreshCommand(t *testing.T) {
+	r := integrationRunner(t)
+	ctx := context.Background()
+	name := uniqueName(t, "irefresh")
+	ctxDir := writeCtx(t, "FROM busybox:stable\nRUN echo base > /base\n")
+
+	broken := &config.Container{RefreshCmd: "echo apt-get-not-here >&2; exit 3"}
+	_, err := r.Run(ctx, Job{Container: name, Flavor: "default", Kind: schedule.Rebuild, Config: broken, ContextDir: ctxDir}, io.Discard)
+	te, ok := err.(*TestError)
+	if !ok || te.Kind != "refresh_cmd check" || !strings.Contains(te.Output, "apt-get-not-here") {
+		t.Fatalf("a broken refresh_cmd must fail the rebuild with its output: %v", err)
+	}
+	if got := tags(t, name); len(got) != 0 {
+		t.Errorf("nothing may be pushed: %v", got)
+	}
+
+	working := &config.Container{RefreshCmd: "echo refreshed > /refreshed"}
+	res, err := r.Run(ctx, Job{Container: name, Flavor: "default", Kind: schedule.Rebuild, Config: working, ContextDir: ctxDir}, io.Discard)
+	if err != nil || !res.RefreshChecked {
+		t.Fatalf("%+v %v", res, err)
+	}
+	cleanup(t, r, name, res)
+	if got := tags(t, name); !contains(got, "latest") {
+		t.Errorf("promoted: %v", got)
+	}
+}

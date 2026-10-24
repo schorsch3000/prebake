@@ -253,3 +253,13 @@ func TestParentArgName(t *testing.T) {
 		}
 	}
 }
+
+func TestRefreshHash(t *testing.T) {
+	if RefreshHash("") != "none" || RefreshHash("  \n") != "none" {
+		t.Error("no command has the fixed value")
+	}
+	a, b := RefreshHash("apt-get update"), RefreshHash("apt-get upgrade")
+	if a == b || a == "none" || a != RefreshHash("  apt-get update \n") {
+		t.Errorf("%s %s", a, b)
+	}
+}

@@ -210,7 +210,10 @@ func TestRefresh(t *testing.T) {
 		t.Fatalf("%+v %v", res, err)
 	}
 	s := f.specs[0]
-	want := "FROM localhost:5001/dev:latest\nRUN apt-get update && apt-get upgrade -y\n"
+	want := RefreshDockerfile("localhost:5001/dev:latest", "apt-get update && apt-get upgrade -y")
+	if want != "FROM localhost:5001/dev:latest\nRUN [\"sh\", \"-c\", \"apt-get update \\u0026\\u0026 apt-get upgrade -y\"]\n" {
+		t.Fatalf("the refresh step is the exec-form step shared with the tests: %q", want)
+	}
 	if s.Body != want || s.Dockerfile != "" || !s.NoCache {
 		t.Errorf("spec = %+v", s)
 	}
@@ -400,5 +403,74 @@ func TestFailuresCarryTheDockerOutput(t *testing.T) {
 	_, err = runner(f).Run(context.Background(), job(schedule.Rebuild, &config.Container{}), io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "line 99") || strings.Contains(err.Error(), "line 50\n") || strings.Count(err.Error(), "\n") > 16 {
 		t.Errorf("excerpt not bounded: %v", err)
+	}
+}
+
+// --- refresh_cmd check on rebuilds -----------------------------------------------------
+
+func TestRebuildVerifiesTheRefreshCommandBeforePromoting(t *testing.T) {
+	f := newFake()
+	c := &config.Container{Tests: []string{"git --version"}, RefreshCmd: "apt-get update && apt-get upgrade -y"}
+	res, err := runner(f).Run(context.Background(), job(schedule.Rebuild, c), io.Discard)
+	if err != nil || !res.RefreshChecked {
+		t.Fatalf("%+v %v", res, err)
+	}
+	smoke, refresh, push := index(f.calls, "run git --version"), index(f.calls, "run apt-get update && apt-get upgrade -y"), index(f.calls, "push")
+	if !(smoke >= 0 && smoke < refresh && refresh < push) {
+		t.Errorf("order: smoke test, then the refresh_cmd check, then promote: %v", f.calls)
+	}
+}
+
+func TestBrokenRefreshCommandStopsThePromotion(t *testing.T) {
+	f := newFake()
+	f.failOn["run:apt-get updat"] = errors.New("exit 127")
+	f.runOut["apt-get updat"] = "sh: 1: apt-get updat: not found"
+	c := &config.Container{RefreshCmd: "apt-get updat"}
+	_, err := runner(f).Run(context.Background(), job(schedule.Rebuild, c), io.Discard)
+	var te *TestError
+	if !errors.As(err, &te) || te.Kind != "refresh_cmd check" || te.Cmd != "apt-get updat" || !strings.Contains(te.Output, "not found") {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(err.Error(), `refresh_cmd check "apt-get updat" failed`) {
+		t.Errorf("the message names the check: %v", err)
+	}
+	if index(f.calls, "push") >= 0 || index(f.calls, "tag") >= 0 {
+		t.Errorf("a broken refresh must not be promoted: %v", f.calls)
+	}
+	if index(f.calls, "remove") < 0 {
+		t.Errorf("candidate cleaned up: %v", f.calls)
+	}
+	// the smoke-test error keeps its wording
+	f2 := newFake()
+	f2.failOn["run:bad"] = errors.New("exit 1")
+	_, err = runner(f2).Run(context.Background(), job(schedule.Rebuild, &config.Container{Tests: []string{"bad"}}), io.Discard)
+	if !strings.Contains(err.Error(), `smoke test "bad" failed`) {
+		t.Errorf("%v", err)
+	}
+}
+
+func TestRefreshJobsAndCommandlessContainersSkipTheCheck(t *testing.T) {
+	// a refresh IS the refresh_cmd: no second run
+	f := newFake()
+	f.local["localhost:5001/dev:latest"] = true
+	res, err := runner(f).Run(context.Background(), job(schedule.Refresh, &config.Container{RefreshCmd: "echo hi"}), io.Discard)
+	if err != nil || res.RefreshChecked || index(f.calls, "run echo hi") >= 0 {
+		t.Errorf("refresh: %+v %v %v", res, err, f.calls)
+	}
+	// nothing to verify without a refresh_cmd
+	f = newFake()
+	res, err = runner(f).Run(context.Background(), job(schedule.Rebuild, &config.Container{}), io.Discard)
+	if err != nil || res.RefreshChecked {
+		t.Errorf("no refresh_cmd: %+v %v", res, err)
+	}
+	f = newFake()
+	if res, _ := runner(f).Run(context.Background(), job(schedule.Rebuild, &config.Container{RefreshCmd: "   "}), io.Discard); res.RefreshChecked || index(f.calls, "run") >= 0 {
+		t.Errorf("a blank refresh_cmd is none: %v", f.calls)
+	}
+	// a refresh that falls back to a rebuild (no previous image) is a rebuild: it is checked
+	f = newFake()
+	res, err = runner(f).Run(context.Background(), job(schedule.Refresh, &config.Container{RefreshCmd: "echo hi"}), io.Discard)
+	if err != nil || res.Kind != schedule.Rebuild || !res.RefreshChecked {
+		t.Errorf("fallback rebuild: %+v %v", res, err)
 	}
 }

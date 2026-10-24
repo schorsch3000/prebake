@@ -160,6 +160,24 @@ git -C "$work/w" push -q origin HEAD:main
 demo_has_v2() { docker pull -q "localhost:$read_port/ci-demo:latest" && docker run --rm "localhost:$read_port/ci-demo:latest" test -f /v2; }
 wait_for 300 "ci-demo to be rebuilt from the changed Dockerfile" demo_has_v2
 
+echo "== a broken refresh_cmd fails the rebuild that follows the push (not a refresh days later), and the old image stays"
+printf 'refresh_cmd: "exit 3"\ntests:\n  - "test -f /base"\n' > "$work/w/containers/ci-demo/container.yaml"
+git -C "$work/w" add -A
+git -C "$work/w" commit -q -m "ci-demo: broken refresh_cmd"
+git -C "$work/w" push -q origin HEAD:main
+sha=$(git -C "$work/w" rev-parse HEAD)
+"${compose[@]}" exec -T prebake prebake sync --commit "$sha" --branch main --timeout 60s >/dev/null
+refresh_check_failed() { curl -fsS "$status" | jq -e '.jobs[] | select(.container == "ci-demo") | (.error // "") | contains("refresh_cmd check")'; }
+wait_for 300 "the broken refresh_cmd to fail the rebuild" refresh_check_failed
+demo_has_v2   # the image that was served before is still there
+printf 'refresh_cmd: "true"\ntests:\n  - "test -f /base"\n' > "$work/w/containers/ci-demo/container.yaml"
+git -C "$work/w" add -A
+git -C "$work/w" commit -q -m "ci-demo: working refresh_cmd"
+git -C "$work/w" push -q origin HEAD:main
+sha=$(git -C "$work/w" rev-parse HEAD)
+"${compose[@]}" exec -T prebake prebake sync --commit "$sha" --branch main --timeout 60s >/dev/null
+wait_for 300 "ci-demo to be rebuilt with the fixed refresh_cmd" job_built ci-demo
+
 echo "== a container removed from the repo is listed, then purged on request, and gone from the registry"
 git -C "$work/w" rm -q -r containers/ci-child
 git -C "$work/w" commit -q -m "remove ci-child"

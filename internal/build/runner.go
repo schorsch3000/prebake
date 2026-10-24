@@ -31,17 +31,25 @@ type Result struct {
 	Started  time.Time
 	Duration time.Duration
 	Note     string // e.g. why a refresh became a rebuild
+	// RefreshChecked is true when this rebuild also ran the container's refresh_cmd once on the new
+	// image and it worked (see Run).
+	RefreshChecked bool
 }
 
 // TestError is returned when a smoke test fails; nothing was pushed.
 type TestError struct {
+	Kind   string // "smoke test" (default) or "refresh_cmd check"
 	Cmd    string
 	Output string
 	Err    error
 }
 
 func (e *TestError) Error() string {
-	return fmt.Sprintf("smoke test %q failed: %v: %s", e.Cmd, e.Err, e.Output)
+	kind := e.Kind
+	if kind == "" {
+		kind = "smoke test"
+	}
+	return fmt.Sprintf("%s %q failed: %v: %s", kind, e.Cmd, e.Err, e.Output)
 }
 
 // Runner executes jobs against a Docker implementation.
@@ -174,6 +182,17 @@ func (r *Runner) Run(ctx context.Context, job Job, log io.Writer) (*Result, erro
 			return nil, &TestError{Cmd: t, Output: out, Err: err}
 		}
 	}
+	// A rebuild starts from the sources as they are in git now. The refresh_cmd is only used days
+	// later, by the first refresh; a typo in it (or a command that this image cannot run) would
+	// surface then. So run it once, on the candidate, exactly as a refresh would run it: an image
+	// whose own refresh does not work is not promoted.
+	if kind == schedule.Rebuild && strings.TrimSpace(job.Config.RefreshCmd) != "" {
+		out, err := r.Docker.Test(ctx, candidate, job.Config.RefreshCmd)
+		if err != nil {
+			return nil, &TestError{Kind: "refresh_cmd check", Cmd: job.Config.RefreshCmd, Output: out, Err: err}
+		}
+		res.RefreshChecked = true
+	}
 
 	// promote: date tag first, alias only after the date tag is safely pushed
 	if err := r.Docker.Tag(ctx, candidate, dateRef); err != nil {
@@ -210,10 +229,12 @@ func (r *Runner) havePrevious(ctx context.Context, ref string, log io.Writer) (b
 	return true, nil
 }
 
-// RefreshDockerfile is the generated Dockerfile of a refresh build: the previous
-// image plus the configured refresh command.
+// RefreshDockerfile is the generated Dockerfile of a refresh build: the previous image plus the
+// configured refresh command. It is the same step the smoke tests and the refresh_cmd check of a
+// rebuild use (exec form, so that any command text reaches `sh -c` unchanged), which is what makes
+// that check meaningful.
 func RefreshDockerfile(previous, refreshCmd string) string {
-	return "FROM " + previous + "\nRUN " + strings.TrimSpace(refreshCmd) + "\n"
+	return TestDockerfile(previous, strings.TrimSpace(refreshCmd))
 }
 
 // tailWriter keeps the last max bytes written to it.

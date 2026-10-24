@@ -53,6 +53,8 @@ var migrations = []string{
 		container TEXT NOT NULL, flavor TEXT NOT NULL, since INTEGER NOT NULL,
 		PRIMARY KEY (container, flavor)
 	);`,
+	// 4: fingerprint of the refresh_cmd that the last successful rebuild verified (config.RefreshHash)
+	`ALTER TABLE images ADD COLUMN refresh_checked TEXT NOT NULL DEFAULT '';`,
 }
 
 // Open opens (and migrates) the database at path; ":memory:" works for tests.
@@ -136,6 +138,9 @@ type JobRecord struct {
 	// a refresh stacks on the previous image and says nothing about the current inputs. Empty
 	// leaves the stored value alone.
 	InputsHash string
+	// RefreshChecked is the config.RefreshHash of the refresh_cmd the rebuild verified. Set it for
+	// rebuilds only; empty leaves the stored value alone.
+	RefreshChecked string
 }
 
 func tail(s string, n int) string {
@@ -187,6 +192,12 @@ func (s *Store) RecordJob(r JobRecord) (int64, error) {
 			nano(r.Finished), r.DateTag, r.Digest, r.Container, r.Flavor); err != nil {
 			return 0, err
 		}
+		if r.RefreshChecked != "" {
+			if _, err := tx.Exec(`UPDATE images SET refresh_checked = ? WHERE container = ? AND flavor = ?`,
+				r.RefreshChecked, r.Container, r.Flavor); err != nil {
+				return 0, err
+			}
+		}
 		if r.InputsHash != "" {
 			if _, err := tx.Exec(`UPDATE images SET inputs_hash = ? WHERE container = ? AND flavor = ?`,
 				r.InputsHash, r.Container, r.Flavor); err != nil {
@@ -208,14 +219,15 @@ type Image struct {
 	schedule.State
 	DateTag, Digest string
 	InputsHash      string // empty: unknown (built before hashes were recorded)
+	RefreshChecked  string // empty: unknown
 }
 
 // ImageState returns the scheduling state; a never-built image has zero times.
 func (s *Store) ImageState(container, flavor string) (Image, error) {
 	img := Image{Container: container, Flavor: flavor}
 	var rb, rf int64
-	err := s.db.QueryRow(`SELECT last_rebuild, last_refresh, date_tag, digest, inputs_hash FROM images WHERE container = ? AND flavor = ?`,
-		container, flavor).Scan(&rb, &rf, &img.DateTag, &img.Digest, &img.InputsHash)
+	err := s.db.QueryRow(`SELECT last_rebuild, last_refresh, date_tag, digest, inputs_hash, refresh_checked FROM images WHERE container = ? AND flavor = ?`,
+		container, flavor).Scan(&rb, &rf, &img.DateTag, &img.Digest, &img.InputsHash, &img.RefreshChecked)
 	if err == sql.ErrNoRows {
 		return img, nil
 	}
@@ -231,6 +243,18 @@ func (s *Store) ImageState(container, flavor string) (Image, error) {
 func (s *Store) SetInputsHash(container, flavor, hash string) error {
 	_, err := s.db.Exec(`UPDATE images SET inputs_hash = ? WHERE container = ? AND flavor = ? AND inputs_hash = ''`,
 		hash, container, flavor)
+	return err
+}
+
+// SetRefreshChecked records which refresh_cmd an image is considered verified for. Without force it
+// only fills an unknown value (adoption of images built before this was recorded); with force it
+// overwrites (the command was removed, so there is nothing left to verify).
+func (s *Store) SetRefreshChecked(container, flavor, hash string, force bool) error {
+	q := `UPDATE images SET refresh_checked = ? WHERE container = ? AND flavor = ?`
+	if !force {
+		q += ` AND refresh_checked = ''`
+	}
+	_, err := s.db.Exec(q, hash, container, flavor)
 	return err
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // InputsHash fingerprints everything in a container that decides what its image contains:
@@ -72,4 +73,16 @@ func InputsHash(containerDir string, c *Container, flavor string) (string, error
 		fmt.Fprintf(h, "parent %s\n", d)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// RefreshHash fingerprints a container's refresh_cmd. A rebuild verifies the command and records
+// this value; a different command later makes the image "not verified" and triggers a rebuild,
+// which verifies it. No command at all has the fixed fingerprint "none".
+func RefreshHash(refreshCmd string) string {
+	cmd := strings.TrimSpace(refreshCmd)
+	if cmd == "" {
+		return "none"
+	}
+	sum := sha256.Sum256([]byte(cmd))
+	return hex.EncodeToString(sum[:])
 }

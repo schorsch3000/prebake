@@ -89,7 +89,7 @@ containers/
 
 | key | meaning |
 |---|---|
-| `refresh_cmd` | run on top of the previous image, e.g. `apt-get update && apt-get upgrade -y`. Without it a refresh becomes a rebuild |
+| `refresh_cmd` | run on top of the previous image, e.g. `apt-get update && apt-get upgrade -y`. Without it a refresh becomes a rebuild. Every rebuild runs it once on the new image before promoting it (see below), so a broken command fails right after the push |
 | `rebuild_interval`, `refresh_interval` | override the defaults |
 | `keep` | per-container keep, must not exceed the global `keep` |
 | `depends_on` | list of parent containers, built first; the Dockerfile receives each as `PARENT_<NAME>` and the first also as `PARENT` (see "Parents" below) |
@@ -125,6 +125,19 @@ Unknown keys are errors. Stray files are errors too, in three places:
 - A failed job is retried once after `retry_delay` (silently; anywhere, if it is needed now). A second failure
   sends a notification and parks the job until the next valid push or a manual
   trigger. Children of a parked parent are skipped.
+
+### The refresh_cmd is verified by every rebuild
+
+A `refresh_cmd` is normally only used by the first refresh, a day or more after a rebuild, so a typo in it (or a command the
+image cannot run, a missing `apt-get`, a quoting mistake) would stay hidden until then. Therefore every rebuild runs the
+`refresh_cmd` once on the new image, as a throwaway step exactly like a refresh would run it, after the smoke tests and before the
+image is promoted. If it fails, the rebuild fails (`refresh_cmd check "..." failed: ...` with Docker's output), the previous image stays,
+and the job is retried and parked as usual. A new container, a changed Dockerfile and an interval rebuild are all covered, because
+they are all rebuilds.
+
+Changing only the `refresh_cmd` in git also triggers a rebuild (`NEEDS: refresh_cmd changed: a rebuild verifies it`), since that is
+the only way to know the new command works; removing the command, or changing the other scheduler settings, does not. Images built
+by an older version are assumed fine and are not rebuilt because of this. The check costs the run time of the refresh command once per rebuild.
 
 ### Parents: `depends_on` and `PARENT`
 
@@ -339,7 +352,7 @@ switch it off, `--color always|never|auto` overrides.
 warns when the CLI and the daemon differ in major or minor version (patch releases never warn; `edge` or development builds cannot be compared).
 
 `status` has a NEEDS column and `dry-run` a WHY column that say why work is pending, in the terms of the
-schedule rules: `never built`, `missing from the registry`, `build inputs changed in git`, `refresh interval over` /
+schedule rules: `never built`, `missing from the registry`, `build inputs changed in git`, `refresh_cmd changed: a rebuild verifies it`, `refresh interval over` /
 `rebuild interval over` (a missed slot or downtime), or `early start: the last slot before it falls due`. Work that is
 needed now shows `now` in `dry-run`, whatever the slot says; `on schedule` means nothing is pending and the next run is
 just the planned one. The reasons are refreshed by the scheduler pass (every 30 seconds and after each build), not on every request.
