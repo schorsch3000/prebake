@@ -72,6 +72,9 @@ func (r *Runner) Ref(container, tag string) string {
 	return r.Registry + "/" + container + ":" + tag
 }
 
+// ContainerArg is the build arg that carries the name of the container being built.
+const ContainerArg = "PREBAKE_CONTAINER"
+
 // ParentArgs returns the build args that tell a Dockerfile where its parents
 // are: PARENT (first parent) and PARENT_<NAME> for each.
 func (r *Runner) ParentArgs(dependsOn []string) map[string]string {
@@ -124,6 +127,7 @@ func (r *Runner) Run(ctx context.Context, job Job, log io.Writer) (*Result, erro
 	for k, v := range r.ParentArgs(job.Config.DependsOn) {
 		args[k] = v
 	}
+	args[ContainerArg] = job.Container
 
 	kind := job.Kind
 	if kind == schedule.Refresh {

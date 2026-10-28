@@ -199,6 +199,9 @@ func TestFlavorAlias(t *testing.T) {
 	if f.specs[0].Args["CUDA"] != "1" {
 		t.Errorf("flavor args missing: %v", f.specs[0].Args)
 	}
+	if f.specs[0].Args["PREBAKE_CONTAINER"] != "dev" {
+		t.Errorf("container name arg missing: %v", f.specs[0].Args)
+	}
 }
 
 func TestRefresh(t *testing.T) {

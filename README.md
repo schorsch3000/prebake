@@ -139,6 +139,12 @@ Changing only the `refresh_cmd` in git also triggers a rebuild (`NEEDS: refresh_
 the only way to know the new command works; removing the command, or changing the other scheduler settings, does not. Images built
 by an older version are assumed fine and are not rebuilt because of this. The check costs the run time of the refresh command once per rebuild.
 
+### The container name: `PREBAKE_CONTAINER`
+
+Every build also gets the name of the container as `PREBAKE_CONTAINER` (`dev` for `containers/dev/`), so a shared
+Dockerfile can tell which container it builds. Declare it with `ARG PREBAKE_CONTAINER`. It is set by prebake and
+overrides a flavor arg of the same name.
+
 ### Parents: `depends_on` and `PARENT`
 
 `depends_on` is a list because a container may build on several others. At every build prebake passes one build arg
